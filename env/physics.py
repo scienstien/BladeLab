@@ -1,61 +1,189 @@
-"""Physics simulation module for TurboDesigner 2.0"""
+import math
+from env.config import COEFFS
+from env.velocity import compute_velocity_triangles, compute_mass_flow
 
-from env.config import INIT_PARAMS, BOUNDS
+
+# --- LOSSES ---
+
+def blade_loading_loss(params):
+    W1 = params["W1"]
+    W2 = params["W2"]
+    U2 = params["U2"]
+    D1 = params["D1"]
+    D2 = params["D2"]
+    z = params["Z"]
+    Cp = params["Cp"]
+    T1 = params["T1"]
+    T2 = params["T2"]
+
+    K_bl = COEFFS["k_bl"]
+
+    term1 = 1 - (W2 / W1)
+    term2 = (Cp * (T2 - T1)) / (U2**2)
+    term3 = W1 / U2
+    term4 = z / math.pi * (1 - D1 / D2) + 2 * D1 / D2
+
+    loss = 0.5 * (term1 + term2 / (term3 * term4))**2 * U2**2
+    return K_bl * loss
 
 
+def incidence_loss(params):
+    W1 = params["W1"]
+    F_mc = COEFFS["k_inc"]
+
+    return F_mc * (W1**2) / 2
+
+
+def disk_friction_loss(params):
+    rho = params["rho1"]
+    mu = params["mu"]
+    U2 = params["U2"]
+    r2 = params["r2"]
+    m_dot = params["m_dot"]
+
+    term1 = 0.0402 * rho * (U2 / r2)**3 * (r2**5)
+    term2 = (U2 * r2 * rho / mu)**0.2
+
+    return term1 / (term2 * m_dot)
+
+
+def skin_friction_loss(params):
+    Cf = COEFFS["k_sf"]
+
+    W = params["W2"]
+    D1 = params["D1"]
+    D2 = params["D2"]
+
+    return 2 * Cf * ((W + D2/2) / ((D1 + D2)/2)) * W**2
+
+
+def clearance_loss(params):
+    epsilon = params["clearance"]
+    b2 = params["b2"]
+    Z = params["Z"]
+
+    r1 = params["r1"]
+    r2 = params["r2"]
+
+    W2 = params["W2"]
+    rho1 = params["rho1"]
+    rho2 = params["rho2"]
+
+    term = (r2**2 - r1**2) / ((r2 - r1) * (1 - rho2 / rho1))
+
+    loss = 0.6 * epsilon * W2 / b2 * ((4 * math.pi) / (b2 * Z) * term)**2
+    return loss
+
+
+def leakage_loss(params):
+    m_dot = params["m_dot"]
+    Uc = params["Uc"]
+    U2 = params["U2"]
+
+    return (m_dot * Uc * U2) / (2 * m_dot + 1e-6)
+
+
+def recirculation_loss(params):
+    W1 = params["W1"]
+    W2 = params["W2"]
+    U2 = params["U2"]
+
+    D1 = params["D1"]
+    D2 = params["D2"]
+    z = params["Z"]
+
+    Cp = params["Cp"]
+    T1 = params["T1"]
+    T2 = params["T2"]
+
+    alpha2 = math.radians(params["alpha2"])
+    K_bl = COEFFS["k_bl"]
+
+    term1 = 1 - W2 / W1
+    term2 = (Cp * (T2 - T1)) / (U2**2)
+    term3 = W1 / U2
+    term4 = z / math.pi * (1 - D1 / D2) + 2 * D1 / D2
+
+    core = term1 + term2 / (term3 * term4)
+
+    return 0.02 * math.tan(alpha2) * (core**2) * U2**2
+
+
+# -------------------------------
+# TOTAL LOSS
+# -------------------------------
+
+def compute_losses(params):
+    return (
+        blade_loading_loss(params)
+        + incidence_loss(params)
+        + disk_friction_loss(params)
+        + skin_friction_loss(params)
+        + clearance_loss(params)
+        + leakage_loss(params)
+        + recirculation_loss(params)
+    )
+
+def compute_efficiency(H, losses):
+    return H / (H + losses + 1e-6)
+
+def compute_pressure_ratio(H, losses, params):
+    gamma = 1.2
+
+    H_net = max(0.0, H - losses)
+
+    term = 1 + H_net / (params["Cp"] * params["T"])
+
+    # safety clamp (prevents weird negatives or explosions)
+    term = max(1e-6, term)
+
+    return term ** (gamma / (gamma - 1))
+
+# def compute_physics(params):
+#     m_dot = compute_flow(params)
+#     H = compute_head(params)
+#     losses = compute_losses(params, m_dot)
+#     eff = compute_efficiency(H, losses)
+#     PR = compute_pressure_ratio(H, losses ,params)
+
+#     return {
+#         "mass_flow": m_dot,
+#         "head": H,
+#         "losses": losses,
+#         "efficiency": eff,
+#         "pressure_ratio": PR
+#     }
 def compute_physics(params):
-    """
-    Compute physics-based outputs for the current design parameters.
+    
+    # 1. velocities
+    vel = compute_velocity_triangles(params)
 
-    Args:
-        params: Dict with 'radius', 'blade_angle', 'thickness'
+    params.update(vel)
 
-    Returns:
-        Dict with 'efficiency', 'pressure_ratio', 'mass_flow'
-    """
-    radius = params.get("radius", INIT_PARAMS["radius"])
-    blade_angle = params.get("blade_angle", INIT_PARAMS["blade_angle"])
-    thickness = params.get("thickness", INIT_PARAMS["thickness"])
+    # 2. mass flow
+    m_dot = compute_mass_flow(params, vel)
+    params["m_dot"] = m_dot
 
-    # Normalize inputs to 0-1 range
-    r_norm = (radius - BOUNDS["radius"][0]) / (BOUNDS["radius"][1] - BOUNDS["radius"][0])
-    a_norm = (blade_angle - BOUNDS["blade_angle"][0]) / (BOUNDS["blade_angle"][1] - BOUNDS["blade_angle"][0])
-    t_norm = (thickness - BOUNDS["thickness"][0]) / (BOUNDS["thickness"][1] - BOUNDS["thickness"][0])
+    # 3. losses
+    losses = compute_losses(params)
 
-    # Physics-based calculations
-    # Mass flow: proportional to radius^2 and blade angle
-    mass_flow = 0.5 + 0.3 * r_norm + 0.2 * a_norm
+    # 4. head (fix this too)
+    H = vel["U2"] * vel["Cu2"]
 
-    # Pressure ratio: function of blade angle and radius
-    pressure_ratio = 1.5 + 0.8 * a_norm + 0.3 * r_norm - 0.2 * t_norm
+    # 5. efficiency
+    eff = H / (H + losses + 1e-6)
 
-    # Efficiency: optimal at mid-range values (bell curve behavior)
-    eff_r = 1.0 - 0.3 * ((r_norm - 0.5) ** 2)
-    eff_a = 1.0 - 0.3 * ((a_norm - 0.5) ** 2)
-    eff_t = 1.0 - 0.2 * ((t_norm - 0.5) ** 2)
-    efficiency = 0.7 * eff_r * eff_a * eff_t
+    # 6. pressure ratio
+    gamma = 1.2
+    term = 1 + (H - losses) / (params["Cp"] * params["T1"])
+    term = max(1e-6, term)
+
+    PR = term ** (gamma / (gamma - 1))
 
     return {
-        "efficiency": efficiency,
-        "pressure_ratio": pressure_ratio,
-        "mass_flow": mass_flow
+        "mass_flow": m_dot,
+        "head": H,
+        "losses": losses,
+        "efficiency": eff,
+        "pressure_ratio": PR
     }
-
-
-class Physics:
-    """Handles physics calculations and simulations."""
-
-    def __init__(self):
-        pass
-
-    def calculate_force(self, mass, acceleration):
-        """Calculate force using F = ma."""
-        return mass * acceleration
-
-    def calculate_velocity(self, initial_velocity, acceleration, time):
-        """Calculate final velocity."""
-        return initial_velocity + acceleration * time
-
-    def calculate_position(self, initial_position, velocity, time):
-        """Calculate new position."""
-        return initial_position + velocity * time

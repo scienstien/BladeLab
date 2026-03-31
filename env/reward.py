@@ -4,31 +4,26 @@ def compute_reward(curr, prev, constraints):
     reward = 0.0
 
     eff = curr["efficiency"]
-    prev_eff = prev["efficiency"]
     PR = curr["pressure_ratio"]
+    phi = constraints["phi"]   # normalized mass flow
 
-    # --- 1. Progress (PRIMARY DRIVER) ---
-    reward += 10.0 * (eff - prev_eff)
+    # --- 1. Absolute objective ---
+    reward += 5.0 * eff
 
-    # --- 2. Useful work (PR gating) ---
-    if PR < PR_TARGET:
-        # heavy penalty if not doing enough compression
-        reward -= 5.0 * (PR_TARGET - PR)**2
-    else:
-        # small bonus if above target (not too aggressive)
-        reward += 0.5 * (PR - PR_TARGET)
+    # --- 2. Pressure ratio targeting ---
+    reward -= 8.0 * (PR - PR_TARGET)**2
 
-    # --- 3. Efficiency reward (secondary, stabilizes) ---
-    reward += 2.0 * eff
+    # --- 3. Surge avoidance (continuous) ---
+    reward -= 15.0 * max(0, 0.75 - phi)**2
 
-    # --- 4. Constraints (HARD PHYSICS) ---
-    if constraints["surge"]:
-        reward -= 10.0 * constraints["surge_margin"]**2
+    # --- 4. Choke avoidance ---
+    reward -= 10.0 * max(0, phi - 1.05)**2
 
-    if constraints["choke"]:
-        reward -= 8.0 * constraints["choke_margin"]**2
+    # --- 5. Stability bonus ---
+    if abs(PR - PR_TARGET) < 0.1 and eff > 0.75:
+        reward += 2.0
 
-    # --- 5. Anti-stagnation ---
-    reward -= 0.02
+    # --- 6. Small step penalty ---
+    reward -= 0.01
 
     return reward
