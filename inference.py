@@ -1,61 +1,126 @@
-"""ML inference loop for TurboDesigner 2.0"""
+import random
+import matplotlib.pyplot as plt
 
-import torch
-from env.physics import Physics
-from env.reward import Reward
-from env.tasks import Task
+from env.core_env import BladeLabEnv
+from env.constraints import check_constraints
+from env.graders import (
+    grade_feasibility,
+    grade_target_pr,
+    grade_efficiency
+)
 
-
-class InferenceLoop:
-    """Main ML inference loop."""
-
-    def __init__(self, model_path=None):
-        self.model = None
-        self.model_path = model_path
-        self.physics = Physics()
-        self.reward = Reward()
-
-    def load_model(self):
-        """Load the ML model."""
-        # TODO: Implement model loading
-        if self.model_path:
-            self.model = torch.load(self.model_path)
-        else:
-            print("No model path specified, using default model")
-
-    def run(self, task: Task, num_steps=100):
-        """Run inference loop for a given task."""
-        task.reset()
-        total_reward = 0.0
-
-        for step in range(num_steps):
-            if task.is_complete():
-                break
-
-            # Get current state
-            state = task.step(action=self.get_action())
-
-            # Calculate reward
-            reward = self.reward.calculate_reward(state, self.get_action(), state)
-            total_reward += reward
-
-        return total_reward
-
-    def get_action(self):
-        """Get action from model."""
-        if self.model:
-            # TODO: Implement model inference
-            pass
-        return None
+# -------------------------------
+# Simple random policy
+# -------------------------------
+def random_action():
+    return {
+        "delta_radius": random.uniform(-0.002, 0.002),
+        "delta_angle": random.uniform(-1.0, 1.0),
+        "delta_thickness": random.uniform(-0.0002, 0.0002),
+    }
 
 
-def main():
-    """Main entry point."""
-    loop = InferenceLoop(model_path="model.pt")
-    loop.load_model()
-    # TODO: Add task and run inference
-    print("Inference loop initialized")
+# -------------------------------
+# Slightly smarter hill-climbing
+# -------------------------------
+def greedy_action(env, base_action, scale=1.0):
+    """
+    Try small variations and pick best
+    """
+    best_action = base_action
+    best_reward = -1e9
+
+    for _ in range(5):
+        action = {
+            "delta_radius": base_action["delta_radius"] + random.uniform(-scale, scale) * 0.001,
+            "delta_angle": base_action["delta_angle"] + random.uniform(-scale, scale),
+            "delta_thickness": base_action["delta_thickness"] + random.uniform(-scale, scale) * 0.0001,
+        }
+
+        # simulate one step (without committing)
+        temp_env = BladeLabEnv()
+        temp_env.state = env.state.copy()
+        temp_env.prev_physics = env.prev_physics.copy()
+
+        obs, reward, _, _ = temp_env.step(action)
+
+        if reward > best_reward:
+            best_reward = reward
+            best_action = action
+
+    return best_action
 
 
+# -------------------------------
+# Run one episode
+# -------------------------------
+def run_episode(env, steps=30, use_greedy=True):
+    obs = env.reset()
+
+    actions = []
+    rewards = []
+
+    action = random_action()
+
+    for step in range(steps):
+        if use_greedy:
+            action = greedy_action(env, action)
+
+        obs, reward, done, _ = env.step(action)
+
+        actions.append(action)
+        rewards.append(reward)
+
+        if done:
+            break
+
+    return actions, rewards
+
+
+# -------------------------------
+# Plot compressor trajectory
+# -------------------------------
+def plot_trajectory(env):
+    traj = env.get_trajectory()
+
+    m = [p["mass_flow"] for p in traj]
+    pr = [p["pressure_ratio"] for p in traj]
+
+    plt.figure()
+    plt.plot(m, pr, marker='o')
+    plt.xlabel("Mass Flow")
+    plt.ylabel("Pressure Ratio")
+    plt.title("Compressor Map Trajectory")
+    plt.grid()
+    plt.show()
+
+
+# -------------------------------
+# Main
+# -------------------------------
 if __name__ == "__main__":
-    main()
+    env = BladeLabEnv()
+
+    actions, rewards = run_episode(env, steps=30)
+
+    # Final physics
+    physics = env.prev_physics
+    constraints = check_constraints(physics)
+
+    # Scores
+    s1 = grade_feasibility(physics, constraints)
+    s2 = grade_target_pr(physics, constraints)
+    s3 = grade_efficiency(physics, constraints)
+
+    print("\n--- FINAL RESULTS ---")
+    print(f"Efficiency: {physics['efficiency']:.4f}")
+    print(f"Pressure Ratio: {physics['pressure_ratio']:.4f}")
+    print(f"Mass Flow: {physics['mass_flow']:.4f}")
+
+    print("\n--- SCORES ---")
+    print(f"Feasibility: {s1:.3f}")
+    print(f"Target PR: {s2:.3f}")
+    print(f"Efficiency Task: {s3:.3f}")
+
+    # Plot behavior
+    plot_trajectory(env)

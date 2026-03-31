@@ -1,20 +1,34 @@
-"""Reward calculation module for TurboDesigner 2.0"""
+from env.config import COEFFS, PR_TARGET
 
+def compute_reward(curr, prev, constraints):
+    reward = 0.0
 
-class Reward:
-    """Handles reward calculations for optimization."""
+    eff = curr["efficiency"]
+    prev_eff = prev["efficiency"]
+    PR = curr["pressure_ratio"]
 
-    def __init__(self):
-        pass
+    # --- 1. Progress (PRIMARY DRIVER) ---
+    reward += 10.0 * (eff - prev_eff)
 
-    def calculate_reward(self, state, action, next_state):
-        """Calculate reward based on state transition."""
-        raise NotImplementedError("Subclasses must implement this method")
+    # --- 2. Useful work (PR gating) ---
+    if PR < PR_TARGET:
+        # heavy penalty if not doing enough compression
+        reward -= 5.0 * (PR_TARGET - PR)**2
+    else:
+        # small bonus if above target (not too aggressive)
+        reward += 0.5 * (PR - PR_TARGET)
 
-    def sparse_reward(self, goal_reached):
-        """Return sparse reward based on goal completion."""
-        return 1.0 if goal_reached else 0.0
+    # --- 3. Efficiency reward (secondary, stabilizes) ---
+    reward += 2.0 * eff
 
-    def dense_reward(self, distance_to_goal):
-        """Return dense reward based on distance to goal."""
-        return 1.0 / (1.0 + distance_to_goal)
+    # --- 4. Constraints (HARD PHYSICS) ---
+    if constraints["surge"]:
+        reward -= 10.0 * constraints["surge_margin"]**2
+
+    if constraints["choke"]:
+        reward -= 8.0 * constraints["choke_margin"]**2
+
+    # --- 5. Anti-stagnation ---
+    reward -= 0.02
+
+    return reward
