@@ -1,0 +1,345 @@
+Env Refactor Report
+
+This report covers only the env/-focused refactor. The goal was to make the environment internally coherent for physics validation and task-based optimization, without changing the empirical loss equations.
+
+Scope
+The refactor targeted:
+- env/config.py
+- env/physics.py
+- env/constraints.py
+- env/tasks.py
+- env/reward.py
+- env/core_env.py
+- tests/test_env.py
+
+Also removed:
+- env/contraints.py (typo duplicate of constraints logic)
+
+High-Level Intent
+The previous code mixed together:
+- design state
+- derived physics values
+- constraint evaluation
+- hard-coded reward logic
+
+The refactor separated those concerns into a cleaner pipeline:
+
+1. state
+2. compute_physics(state)
+3. check_constraints(physics)
+4. task.compute_reward(physics, constraints, prev_physics)
+5. env orchestration and observation building
+
+This was done so the physics model can be reviewed independently from the reward/task policy.
+
+Detailed Changes
+
+1. env/config.py
+Changes made:
+- Removed derived quantities from INIT_PARAMS:
+  - D1
+  - D2
+  - U2
+  - U1
+  - W1
+  - W2
+  - Cu2
+  - Ca
+  - Uc
+- Left only actual inputs / state variables in INIT_PARAMS
+- Added MAX_STEPS = 30
+- Kept BOUNDS, PR_TARGET, SURGE_LIMIT, CHOKE_LIMIT, and COEFFS
+
+Reason:
+Derived quantities should not live in persistent state because they become stale after actions. For example, r2 could change while D2 stayed fixed, which was physically inconsistent.
+
+2. env/physics.py
+This file was replaced structurally, but the empirical loss formulas themselves were preserved.
+
+Preserved without formula changes:
+- blade_loading_loss
+- incidence_loss
+- disk_friction_loss
+- skin_friction_loss
+- clearance_loss
+- leakage_loss
+- recirculation_loss
+
+Structural changes:
+- Added build_physics_inputs(state)
+- build_physics_inputs now:
+  - copies the input state
+  - derives D1 = 2 * r1
+  - derives D2 = 2 * r2
+  - computes velocity-triangle values
+  - computes m_dot
+- compute_losses(params) now returns a dictionary of per-loss components instead of only a scalar
+- compute_physics(state) now:
+  - is pure
+  - does not mutate state
+  - returns a complete physics payload containing:
+    - all input and derived values
+    - mass_flow
+    - head
+    - losses
+    - loss_breakdown
+    - efficiency
+    - pressure_ratio
+
+Important note:
+The pressure-ratio and efficiency formula structure was preserved. The main change was making the function pure and ensuring derived geometry comes from the current state every step.
+
+Reason:
+The old implementation did params.update(...) and wrote m_dot into the passed state dict, which mixed state with cached physics. That made the env harder to reason about and unsafe for future expansion.
+
+3. env/constraints.py
+Changes made:
+- Replaced the previous one-argument / mismatched behavior with one canonical constraints function:
+  - check_constraints(physics, surge_limit=SURGE_LIMIT, choke_limit=CHOKE_LIMIT)
+- New return payload:
+  - feasible
+  - surge
+  - choke
+  - surge_margin
+  - choke_margin
+  - mass_flow
+
+Behavior:
+- surge = mass_flow < surge_limit
+- choke = mass_flow > choke_limit
+- margins are signed relative to feasibility:
+  - surge_margin = mass_flow - surge_limit
+  - choke_margin = choke_limit - mass_flow
+
+Reason:
+The repo previously had two competing implementations:
+- constraints.py
+- contraints.py
+
+core_env and reward logic were effectively depending on the misspelled file's contract. This refactor removed that split and established one consistent constraints shape.
+
+4. Removed env/contraints.py
+Action:
+- Deleted the misspelled duplicate file
+
+Reason:
+It was a second incompatible constraint contract and a source of runtime confusion.
+
+5. env/tasks.py
+This file went from generic scaffolding to actual concrete tasks.
+
+Previous state:
+- Task abstract shell
+- TaskRegistry
+- no concrete optimization tasks
+
+New classes added:
+- FeasibilityTask
+- TargetPRTask
+- TargetPREfficiencyTask
+
+Common task interface:
+- reset()
+- compute_reward(physics, constraints, prev_physics=None)
+- is_success(physics, constraints)
+- is_done(step_count, physics, constraints)
+
+Task details:
+
+FeasibilityTask
+- Objective:
+  - remain within surge/choke bounds
+- Reward:
+  - base step cost
+  - strong infeasibility penalty
+  - positive reward for feasible states
+  - bonus based on available margin
+- Success:
+  - constraints["feasible"] == True
+
+TargetPRTask
+- Objective:
+  - stay feasible and match target pressure ratio
+- Parameters:
+  - target_pr
+  - pr_tolerance
+- Reward:
+  - feasibility-first penalty structure
+  - quadratic penalty on PR error
+  - success bonus when within tolerance
+- Success:
+  - feasible and abs(PR - target_pr) <= pr_tolerance
+
+TargetPREfficiencyTask
+- Inherits from TargetPRTask
+- Adds efficiency optimization on top of PR targeting
+- Parameters:
+  - min_efficiency
+- Reward:
+  - inherits PR-targeting reward
+  - adds efficiency bonus when feasible
+  - bonus if efficiency exceeds threshold
+- Success:
+  - PR success and efficiency above threshold
+
+Task registry updates:
+- Added create(name, **kwargs)
+- Registered default tasks:
+  - "feasibility"
+  - "target_pr"
+  - "target_pr_efficiency"
+
+Reason:
+You asked for three difficulty-ordered tasks. The refactor moved reward policy into tasks, which is the correct boundary for this progression.
+
+6. env/reward.py
+Previous state:
+- one old monolithic compute_reward(curr, prev, constraints) using phi
+- depended on a constraints contract that no longer matched the active code
+
+New state:
+- this file is now a small helper module
+- added:
+  - efficiency_bonus(physics, weight=1.0)
+  - quadratic_target_penalty(value, target, weight=1.0)
+  - infeasibility_penalty(constraints, base_penalty=0.0, margin_weight=1.0)
+
+Reason:
+Actual reward policy now belongs to concrete task classes. This file remains as shared helper logic rather than owning the optimization objective globally.
+
+7. env/core_env.py
+This file was refactored to become the orchestrator only.
+
+Key changes:
+- removed dependency on the old monolithic env.reward.compute_reward
+- added task support:
+  - BladeLabEnv(task=None, task_name=None, task_kwargs=None)
+- added _resolve_task(...)
+- default task is FeasibilityTask() if none is supplied
+
+State tracking changes:
+- added:
+  - self.physics
+  - self.constraints
+- removed:
+  - self.m_max
+  - old path-dependent normalization logic
+
+reset() changes:
+- resets state from INIT_PARAMS
+- resets task
+- computes physics
+- computes constraints
+- stores self.physics, self.constraints, self.prev_physics
+- returns observation including feasibility info
+
+step(action) changes:
+- applies geometry action
+- computes fresh physics from state
+- computes canonical constraints
+- delegates reward to self.task.compute_reward(...)
+- stores history including:
+  - mass flow
+  - pressure ratio
+  - efficiency
+  - feasible flag
+- delegates termination to self.task.is_done(...)
+- returns info with:
+  - task
+  - constraints
+  - success
+
+Observation changes:
+_build_obs() now returns:
+- efficiency
+- pressure_ratio
+- mass_flow
+- feasible
+- surge_margin
+- choke_margin
+- r2
+- blade_angle
+- b2
+- Z
+
+Action handling:
+- clamp() now also rounds Z to an integer after bounds enforcement
+
+Reason:
+The env should not contain hidden reward assumptions. It should only manage state transitions and call the right pure/model layers.
+
+8. tests/test_env.py
+The previous test file targeted a completely different older API and was unusable.
+
+It was replaced with env-contract tests covering:
+- test_apply_action_clamps_state
+- test_compute_physics_is_pure_and_derives_geometry
+- test_constraints_detect_feasible_and_infeasible_regions
+- test_task_reward_ordering_prefers_feasible_targeted_design
+- test_concrete_tasks_report_success_consistently
+- test_env_uses_selected_task
+
+What these tests validate:
+- action clamping works
+- physics does not mutate input state
+- derived geometry updates correctly
+- constraints detect feasible/surge/choke cases
+- harder task reward prefers feasible targeted designs over infeasible ones
+- task success logic is coherent
+- env can instantiate and use a selected task
+
+What Was Explicitly Not Changed
+- The empirical loss equations were not changed.
+- The formulas in:
+  - blade_loading_loss
+  - incidence_loss
+  - disk_friction_loss
+  - skin_friction_loss
+  - clearance_loss
+  - leakage_loss
+  - recirculation_loss
+  were preserved as-is.
+- env/velocity.py was not modified.
+- api/ was not touched.
+
+Behavioral Differences After Refactor
+Compared to the previous version:
+- physics is now pure and reproducible from state
+- geometry-derived values cannot go stale across steps
+- there is only one constraint implementation now
+- reward logic is task-dependent instead of globally hard-coded
+- the env supports explicit easy/medium/hard tasks
+- observations now include feasibility and margins
+- the old phi/m_max path-dependent constraint normalization was removed
+
+Validation Performed
+Could not run pytest normally because pytest is not installed in the available interpreter.
+
+What was run successfully:
+- direct Python sanity check of BladeLabEnv(task_name='target_pr_efficiency')
+  - reset()
+  - step({})
+- direct execution of the new test functions by importing the test module via path
+
+Result:
+- env sanity checks passed
+
+Potential Follow-Up Review Points for Claude Code
+Please ask Claude Code to review these specifically:
+
+1. Whether signed margin semantics in env/constraints.py are the right convention for your downstream training logic.
+2. Whether PR reward weighting vs efficiency reward weighting in env/tasks.py matches your intended optimization priority.
+3. Whether is_success() for FeasibilityTask should require one feasible final state or several consecutive feasible states.
+4. Whether mass_flow thresholds are the right basis for surge/choke at this stage, or whether you want a more physically grounded nondimensional coefficient soon.
+5. Whether compute_pressure_ratio() in env/physics.py should remain exactly as-is or be reviewed for thermodynamic consistency relative to your intended model assumptions.
+6. Whether the returned observation from env/core_env.py should include more intermediate physics terms for RL observability.
+
+Short Summary
+The refactor did not alter the empirical loss equations. It changed the architecture around them so the environment is now structured as:
+- clean state
+- pure physics
+- canonical constraints
+- concrete tasks
+- thin env orchestration
+
+That makes the physics model much easier to review and verify independently.

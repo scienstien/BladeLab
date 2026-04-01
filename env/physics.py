@@ -1,9 +1,8 @@
 import math
+
 from env.config import COEFFS
-from env.velocity import compute_velocity_triangles, compute_mass_flow
+from env.velocity import compute_mass_flow, compute_velocity_triangles
 
-
-# --- LOSSES ---
 
 def blade_loading_loss(params):
     W1 = params["W1"]
@@ -54,7 +53,7 @@ def skin_friction_loss(params):
     D1 = params["D1"]
     D2 = params["D2"]
 
-    return 2 * Cf * ((W + D2/2) / ((D1 + D2)/2)) * W**2
+    return 2 * Cf * ((W + D2 / 2) / ((D1 + D2) / 2)) * W**2
 
 
 def clearance_loss(params):
@@ -71,7 +70,7 @@ def clearance_loss(params):
 
     term = (r2**2 - r1**2) / ((r2 - r1) * (1 - rho2 / rho1))
 
-    loss = 0.6 * epsilon * W2 / b2 * ((4 * math.pi) / (b2 * Z) * term)**2
+    loss = 0.6 * epsilon * W2 / b2 * ((4 * math.pi) / (b2 * Z) * term) ** 2
     return loss
 
 
@@ -97,7 +96,6 @@ def recirculation_loss(params):
     T2 = params["T2"]
 
     alpha2 = math.radians(params["alpha2"])
-    K_bl = COEFFS["k_bl"]
 
     term1 = 1 - W2 / W1
     term2 = (Cp * (T2 - T1)) / (U2**2)
@@ -109,81 +107,56 @@ def recirculation_loss(params):
     return 0.02 * math.tan(alpha2) * (core**2) * U2**2
 
 
-# -------------------------------
-# TOTAL LOSS
-# -------------------------------
-
 def compute_losses(params):
-    return (
-        blade_loading_loss(params)
-        + incidence_loss(params)
-        + disk_friction_loss(params)
-        + skin_friction_loss(params)
-        + clearance_loss(params)
-        + leakage_loss(params)
-        + recirculation_loss(params)
-    )
+    return {
+        "blade_loading": blade_loading_loss(params),
+        "incidence": incidence_loss(params),
+        "disk_friction": disk_friction_loss(params),
+        "skin_friction": skin_friction_loss(params),
+        "clearance": clearance_loss(params),
+        "leakage": leakage_loss(params),
+        "recirculation": recirculation_loss(params),
+    }
 
-def compute_efficiency(H, losses):
-    return H / (H + losses + 1e-6)
 
-def compute_pressure_ratio(H, losses, params):
+def compute_efficiency(head, losses):
+    return head / (head + losses + 1e-6)
+
+
+def compute_pressure_ratio(head, losses, params):
     gamma = 1.2
-
-    H_net = max(0.0, H - losses)
-
-    term = 1 + H_net / (params["Cp"] * params["T"])
-
-    # safety clamp (prevents weird negatives or explosions)
+    term = 1 + (head - losses) / (params["Cp"] * params["T1"])
     term = max(1e-6, term)
-
     return term ** (gamma / (gamma - 1))
 
-# def compute_physics(params):
-#     m_dot = compute_flow(params)
-#     H = compute_head(params)
-#     losses = compute_losses(params, m_dot)
-#     eff = compute_efficiency(H, losses)
-#     PR = compute_pressure_ratio(H, losses ,params)
 
-#     return {
-#         "mass_flow": m_dot,
-#         "head": H,
-#         "losses": losses,
-#         "efficiency": eff,
-#         "pressure_ratio": PR
-#     }
-def compute_physics(params):
-    
-    # 1. velocities
-    vel = compute_velocity_triangles(params)
+def build_physics_inputs(state):
+    params = dict(state)
+    params["D1"] = 2.0 * params["r1"]
+    params["D2"] = 2.0 * params["r2"]
 
-    params.update(vel)
+    velocities = compute_velocity_triangles(params)
+    params.update(velocities)
 
-    # 2. mass flow
-    m_dot = compute_mass_flow(params, vel)
-    params["m_dot"] = m_dot
+    params["m_dot"] = compute_mass_flow(params, velocities)
+    return params
 
-    # 3. losses
-    losses = compute_losses(params)
 
-    # 4. head (fix this too)
-    H = vel["U2"] * vel["Cu2"]
+def compute_physics(state):
+    params = build_physics_inputs(state)
 
-    # 5. efficiency
-    eff = H / (H + losses + 1e-6)
-
-    # 6. pressure ratio
-    gamma = 1.2
-    term = 1 + (H - losses) / (params["Cp"] * params["T1"])
-    term = max(1e-6, term)
-
-    PR = term ** (gamma / (gamma - 1))
+    loss_breakdown = compute_losses(params)
+    total_losses = sum(loss_breakdown.values())
+    head = params["U2"] * params["Cu2"]
+    efficiency = compute_efficiency(head, total_losses)
+    pressure_ratio = compute_pressure_ratio(head, total_losses, params)
 
     return {
-        "mass_flow": m_dot,
-        "head": H,
-        "losses": losses,
-        "efficiency": eff,
-        "pressure_ratio": PR
+        **params,
+        "mass_flow": params["m_dot"],
+        "head": head,
+        "losses": total_losses,
+        "loss_breakdown": loss_breakdown,
+        "efficiency": efficiency,
+        "pressure_ratio": pressure_ratio,
     }
