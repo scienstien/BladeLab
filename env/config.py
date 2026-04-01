@@ -10,6 +10,7 @@ INIT_PARAMS = {
     "blade_angle": 60.0,
     "alpha2": 60.0,
     "Cp": 1005,
+    "R": 287.0,
     "T1": 300.0,
     "T2": 320.0,
     "rho1": 1.2,
@@ -33,7 +34,7 @@ CHOKE_LIMIT = 1.05
 COEFFS = {
     "k_bl": 0.6,
     "k_inc": 0.7,
-    "k_sf": 0.004,
+    "k_sf": 0.008,
     "k_leak": 0.02,
     "k_pr": 2.0,
     "k_surge": 5.0,

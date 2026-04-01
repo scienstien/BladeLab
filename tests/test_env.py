@@ -38,9 +38,17 @@ def test_compute_physics_is_pure_and_derives_geometry():
 
 
 def test_constraints_detect_feasible_and_infeasible_regions():
-    feasible_constraints = check_constraints({"mass_flow": 0.9})
-    surge_constraints = check_constraints({"mass_flow": SURGE_LIMIT - 0.01})
-    choke_constraints = check_constraints({"mass_flow": CHOKE_LIMIT + 0.01})
+    base_physics = compute_physics(deepcopy(INIT_PARAMS))
+    feasible_case = dict(base_physics)
+    feasible_case["mass_flow"] = min(base_physics["mass_flow"], check_constraints(base_physics)["choke_limit"] - 0.05)
+    surge_case = dict(base_physics)
+    surge_case["mass_flow"] = SURGE_LIMIT - 0.01
+    choke_case = dict(base_physics)
+    choke_case["mass_flow"] = check_constraints(base_physics)["choke_limit"] + 0.01
+
+    feasible_constraints = check_constraints(feasible_case)
+    surge_constraints = check_constraints(surge_case)
+    choke_constraints = check_constraints(choke_case)
 
     assert feasible_constraints["feasible"] is True
     assert surge_constraints["surge"] is True

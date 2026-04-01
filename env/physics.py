@@ -49,11 +49,27 @@ def disk_friction_loss(params):
 def skin_friction_loss(params):
     Cf = COEFFS["k_sf"]
 
-    W = params["W2"]
     D1 = params["D1"]
     D2 = params["D2"]
+    b2 = params["b2"]
+    W1 = params["W1"]
+    W2 = params["W2"]
 
-    return 2 * Cf * ((W + D2 / 2) / ((D1 + D2) / 2)) * W**2
+    r1 = D1 / 2.0
+    r2 = D2 / 2.0
+
+    area = 2 * math.pi * r2 * b2
+    wetted_perimeter = 2 * (2 * math.pi * r2 + b2)
+    hydraulic_diameter = 4 * area / wetted_perimeter
+
+    beta1 = math.radians(30.0)
+    beta2 = math.radians(params["blade_angle"])
+    beta_m = (2 * beta2 + beta1) / 3.0
+
+    path_length = (r2 - r1) / math.cos(beta_m)
+    mean_relative_velocity = (W1 + W2) / 2.0
+
+    return Cf * (path_length / hydraulic_diameter) * mean_relative_velocity**2
 
 
 def clearance_loss(params):
@@ -61,17 +77,24 @@ def clearance_loss(params):
     b2 = params["b2"]
     Z = params["Z"]
 
-    r1 = params["r1"]
     r2 = params["r2"]
-
-    W2 = params["W2"]
+    rs1 = params["r1"]
+    rh1 = 0.0
     rho1 = params["rho1"]
     rho2 = params["rho2"]
+    U2 = params["U2"]
+    Ctheta2 = params["Cu2"]
+    Cm2 = params["Ca"]
 
-    term = (r2**2 - r1**2) / ((r2 - r1) * (1 - rho2 / rho1))
-
-    loss = 0.6 * epsilon * W2 / b2 * ((4 * math.pi) / (b2 * Z) * term) ** 2
-    return loss
+    geom_term = ((rs1**2 - rh1**2) / ((r2 - rs1) * (1 + rho2 / rho1))) if r2 != rs1 else 0.0
+    flow_term = (Ctheta2 / U2) * (Cm2 / U2)
+    normalized_loss = (
+        0.6
+        * (epsilon / b2)
+        * (Ctheta2 / U2)
+        * math.sqrt((4 * math.pi / (b2 * Z)) * geom_term * flow_term)
+    )
+    return normalized_loss * U2**2
 
 
 def leakage_loss(params):
@@ -120,14 +143,14 @@ def compute_losses(params):
 
 
 def compute_efficiency(head, losses):
-    return head / (head + losses + 1e-6)
+    return max(0.0, (head - losses) / (head + 1e-6))
 
 
 def compute_pressure_ratio(head, losses, params):
-    gamma = 1.2
+    gamma = 1.4
     term = 1 + (head - losses) / (params["Cp"] * params["T1"])
     term = max(1e-6, term)
-    return term ** (gamma / (gamma - 1))
+    return term ** ((gamma - 1) / gamma)
 
 
 def build_physics_inputs(state):

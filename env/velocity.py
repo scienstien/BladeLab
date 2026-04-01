@@ -1,9 +1,17 @@
 import math
 
+K_PHI = 0.45
+K_BLOCKAGE = 0.05
+Z_REF = 7
+PHI_MIN = 0.2
+PHI_MAX = 0.5
+
+
 def compute_velocity_triangles(params):
     rpm = params["rpm"]
     r2 = params["r2"]
     r1 = params["r1"]
+    Z = params["Z"]
 
     beta2 = math.radians(params["blade_angle"])   # outlet blade angle
     alpha2 = math.radians(params["alpha2"])       # flow angle
@@ -18,9 +26,12 @@ def compute_velocity_triangles(params):
     U1 = omega * r1
 
     # -----------------------
-    # Assume axial inlet flow (simplification)
+    # Approximate the meridional velocity using a bounded flow coefficient.
     # -----------------------
-    Ca = 0.3 * U2   # axial velocity (you can tune this later)
+    phi = K_PHI * math.sin(beta2)
+    phi *= 1 - K_BLOCKAGE * ((Z - Z_REF) / Z_REF)
+    phi = max(PHI_MIN, min(PHI_MAX, phi))
+    Ca = phi * U2
 
     # -----------------------
     # Velocity triangles
@@ -40,6 +51,7 @@ def compute_velocity_triangles(params):
         "W2": W2,
         "Cu2": Cu2,
         "Ca": Ca,
+        "phi": phi,
         "Uc": Uc
     }
 def compute_mass_flow(params, velocities):
