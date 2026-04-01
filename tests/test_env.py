@@ -3,6 +3,7 @@ from copy import deepcopy
 from env.config import CHOKE_LIMIT, INIT_PARAMS, PR_TARGET, SURGE_LIMIT
 from env.constraints import check_constraints
 from env.core_env import BladeLabEnv, apply_action
+from env.graders import FeasibilityGrader, TargetPRGrader, TargetPREfficiencyGrader
 from env.physics import compute_physics
 from env.tasks import FeasibilityTask, TargetPRTask, TargetPREfficiencyTask
 
@@ -98,3 +99,42 @@ def test_env_uses_selected_task():
     assert obs["feasible"] in (True, False)
     _, _, _, info = env.step({})
     assert info["task"] == "target_pr_efficiency"
+
+
+def test_graders_follow_task_success_criteria():
+    physics = {"pressure_ratio": PR_TARGET + 0.01, "efficiency": 0.8}
+    constraints = {
+        "feasible": True,
+        "surge": False,
+        "choke": False,
+        "surge_margin": 0.1,
+        "choke_margin": 0.1,
+    }
+
+    feasibility_grader = FeasibilityGrader(task=FeasibilityTask())
+    pr_grader = TargetPRGrader(task=TargetPRTask(target_pr=PR_TARGET, pr_tolerance=0.05))
+    hard_grader = TargetPREfficiencyGrader(
+        task=TargetPREfficiencyTask(target_pr=PR_TARGET, pr_tolerance=0.05, min_efficiency=0.75)
+    )
+
+    assert feasibility_grader.passed(physics, constraints) is True
+    assert pr_grader.passed(physics, constraints) is True
+    assert hard_grader.passed(physics, constraints) is True
+    assert 0.0 <= feasibility_grader.grade(physics, constraints) <= 1.0
+    assert 0.0 <= pr_grader.grade(physics, constraints) <= 1.0
+    assert 0.0 <= hard_grader.grade(physics, constraints) <= 1.0
+
+
+def test_infeasible_design_gets_zero_task_grades():
+    physics = {"pressure_ratio": PR_TARGET, "efficiency": 0.9}
+    constraints = {
+        "feasible": False,
+        "surge": True,
+        "choke": False,
+        "surge_margin": -0.2,
+        "choke_margin": 0.3,
+    }
+
+    assert FeasibilityGrader().grade(physics, constraints) == 0.0
+    assert TargetPRGrader().grade(physics, constraints) == 0.0
+    assert TargetPREfficiencyGrader().grade(physics, constraints) == 0.0
