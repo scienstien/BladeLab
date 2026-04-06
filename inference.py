@@ -1,4 +1,6 @@
 import argparse
+import json
+import os
 import statistics
 from pathlib import Path
 
@@ -6,6 +8,7 @@ import matplotlib.pyplot as plt
 
 from env.core_env import BladeLabEnv
 from env.graders import grade_efficiency, grade_feasibility, grade_target_pr
+from env.models import Action, Observation, safe_default_action
 
 
 STATE_KEYS = [
@@ -70,13 +73,14 @@ class TorchPolicy:
         state_tensor = torch.tensor(encode_state(state), dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             action_tensor = self.model(state_tensor).squeeze(0).cpu().tolist()
-        return decode_action(action_tensor)
+        return validate_action(decode_action(action_tensor))
 
 
 class HeuristicPolicy:
     """Deterministic fallback policy for debugging when no checkpoint is available."""
 
     def __call__(self, state):
+        state = state.model_dump() if isinstance(state, Observation) else state
         action = {
             "delta_r2": 0.0,
             "delta_angle": 0.0,
@@ -103,7 +107,93 @@ class HeuristicPolicy:
         return action
 
 
+class Agent:
+    def __init__(self, policy):
+        self.policy = policy
+
+    def act(self, observation, trajectory=None):
+        if isinstance(self.policy, OpenAIPolicy):
+            return validate_action(self.policy(observation, trajectory))
+        return validate_action(self.policy(observation))
+
+    def reset(self):
+        pass
+
+
+class OpenAIPolicy:
+    def __init__(self, client, model, task_name):
+        self.client = client
+        self.model = model
+        self.task_name = task_name
+
+    def __call__(self, observation, trajectory=None):
+        observation_payload = observation.model_dump() if isinstance(observation, Observation) else observation
+        compact_trajectory = [
+            {
+                "reward": step["reward"],
+                "action": step["action"],
+                "next_state": step["next_state"],
+            }
+            for step in (trajectory or [])[-5:]
+        ]
+
+        prompt = {
+            "task": self.task_name,
+            "instruction": (
+                "Return only a JSON object with keys delta_r2, delta_angle, delta_b2, delta_Z. "
+                "Use conservative continuous action deltas to improve reward while keeping the design feasible."
+            ),
+            "observation": observation_payload,
+            "recent_trajectory": compact_trajectory,
+            "action_bounds": Action.model_json_schema(),
+        }
+
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": "You are a deterministic compressor-control policy. Output strict JSON only.",
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(prompt),
+                    },
+                ],
+                temperature=0,
+                timeout=30,
+            )
+        except Exception as e:
+            # Log API error and return safe default action
+            error_type = type(e).__name__
+            if "auth" in str(e).lower():
+                print(f"[API_ERROR] Authentication failed: {e}")
+            elif "rate" in str(e).lower():
+                print(f"[API_ERROR] Rate limit exceeded: {e}")
+            elif "connection" in str(e).lower() or "timeout" in str(e).lower():
+                print(f"[API_ERROR] Connection/timeout error: {e}")
+            else:
+                print(f"[API_ERROR] {error_type}: {e}")
+            return safe_default_action()
+
+        text = getattr(response, "output_text", "") or ""
+        if not text:
+            print("[API_ERROR] Empty response from API")
+            return safe_default_action()
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as e:
+            print(f"[API_ERROR] Invalid JSON response: {e}")
+            print(f"[API_ERROR] Raw response (truncated): {text[:200]}")
+            return safe_default_action()
+
+        return validate_action(parsed)
+
+
 def encode_state(state):
+    state = state.model_dump() if isinstance(state, Observation) else state
     encoded = []
     for key in STATE_KEYS:
         value = state[key]
@@ -123,6 +213,15 @@ def decode_action(action_values):
         else:
             action[key] = scaled_value
     return action
+
+
+def validate_action(action_candidate):
+    if isinstance(action_candidate, Action):
+        return action_candidate
+    try:
+        return Action(**action_candidate)
+    except Exception:
+        return safe_default_action()
 
 
 def load_model(model_path=None, device=None, use_heuristic=False):
@@ -163,28 +262,76 @@ def load_model(model_path=None, device=None, use_heuristic=False):
     return TorchPolicy(model, device)
 
 
-def log_step(trajectory, state, action, reward, next_state, info):
+def load_openai_policy(task_name, model_name):
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set.")
+
+    base_url = os.getenv("API_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+    model = model_name if model_name else os.getenv("MODEL_NAME", "gpt-4.1-mini")
+
+    try:
+        from openai import OpenAI
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("The openai package is not installed in this environment.") from exc
+
+    client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+    return OpenAIPolicy(client, model, task_name)
+
+
+def log_start(task, benchmark, model):
+    print(f"[START] task={task} env={benchmark} model={model}")
+
+
+def log_end(success, steps, score, rewards):
+    rewards_str = json.dumps(rewards, separators=(",", ":"))
+    print(f"[END] success={success} steps={steps} score={score:.3f} rewards={rewards_str}")
+
+
+def log_step(trajectory, state, action, reward, next_state, info, step_num=None, done=False, error=None):
+    step_num = len(trajectory) + 1 if step_num is None else step_num
+
+    # Serialize action as compact JSON
+    action_dict = action.model_dump() if isinstance(action, Action) else dict(action)
+    action_str = json.dumps(action_dict, separators=(",", ":"))
+
+    # Extract key metrics for logging
+    next_state_dict = next_state.model_dump() if isinstance(next_state, Observation) else dict(next_state)
+    feasible = next_state_dict.get("feasible", "N/A")
+    pr = next_state_dict.get("pressure_ratio")
+    eff = next_state_dict.get("efficiency")
+
+    # Print [STEP] log to console
+    error_str = f" error={error}" if error else ""
+    print(
+        f"[STEP] step={step_num} action={action_str} reward={reward:.4f} done={done} feasible={feasible} PR={pr:.4f} eff={eff:.4f}{error_str}"
+    )
+
     trajectory.append(
         {
-            "state": dict(state),
-            "action": dict(action),
+            "state": state.model_dump() if isinstance(state, Observation) else dict(state),
+            "action": action_dict,
             "reward": float(reward),
-            "next_state": dict(next_state),
-            "info": info,
+            "next_state": next_state_dict,
+            "info": info.model_dump() if hasattr(info, "model_dump") else info,
+            "error": error,
         }
     )
 
 
-def run_episode(env, policy, max_steps=None):
+def run_episode(env, agent, max_steps=None):
     state = env.reset()
     done = False
     total_reward = 0.0
     trajectory = []
+    agent.reset()
+    step_num = 0
 
     while not done:
-        action = policy(state)
+        step_num += 1
+        action = agent.act(state, trajectory)
         next_state, reward, done, info = env.step(action)
-        log_step(trajectory, state, action, reward, next_state, info)
+        log_step(trajectory, state, action, reward, next_state, info, step_num=step_num, done=done)
 
         state = next_state
         total_reward += reward
@@ -198,7 +345,7 @@ def run_episode(env, policy, max_steps=None):
     return {
         "total_reward": total_reward,
         "trajectory": trajectory,
-        "final_state": dict(state),
+        "final_state": state.model_dump() if isinstance(state, Observation) else dict(state),
         "final_physics": dict(final_physics),
         "final_constraints": dict(final_constraints),
         "feasible_score": grade_feasibility(final_physics, final_constraints),
@@ -207,12 +354,12 @@ def run_episode(env, policy, max_steps=None):
     }
 
 
-def evaluate_agent(policy, task_name, num_episodes=10, max_steps=None):
+def evaluate_agent(agent, task_name, num_episodes=10, max_steps=None):
     episode_results = []
 
     for _ in range(num_episodes):
         env = BladeLabEnv(task_name=task_name)
-        result = run_episode(env, policy, max_steps=max_steps)
+        result = run_episode(env, agent, max_steps=max_steps)
         episode_results.append(result)
 
     rewards = [result["total_reward"] for result in episode_results]
@@ -289,20 +436,25 @@ def print_evaluation_summary(summary):
 def parse_args():
     parser = argparse.ArgumentParser(description="Deterministic OpenEnv-style inference rollout.")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to the trained policy checkpoint.")
+    parser.add_argument("--model", type=str, default="gpt-4.1-mini", help="OpenAI model for API baseline runs.")
     parser.add_argument("--task", type=str, default="target_pr_efficiency", help="Environment task name.")
     parser.add_argument("--episodes", type=int, default=10, help="Number of evaluation episodes.")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per episode.")
     parser.add_argument("--plot", action="store_true", help="Plot the first episode trajectory.")
     parser.add_argument("--heuristic", action="store_true", help="Use deterministic heuristic fallback instead of a checkpoint.")
+    parser.add_argument("--openai", action="store_true", help="Use the OpenAI API policy baseline.")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    policy = load_model(args.checkpoint, use_heuristic=args.heuristic)
+    if args.openai:
+        agent = Agent(load_openai_policy(args.task, args.model))
+    else:
+        agent = Agent(load_model(args.checkpoint, use_heuristic=args.heuristic))
 
     summary = evaluate_agent(
-        policy=policy,
+        agent=agent,
         task_name=args.task,
         num_episodes=args.episodes,
         max_steps=args.max_steps,
