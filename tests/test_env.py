@@ -4,8 +4,9 @@ from env.config import CHOKE_LIMIT, INIT_PARAMS, PR_TARGET, SURGE_LIMIT
 from env.constraints import check_constraints
 from env.core_env import BladeLabEnv, apply_action
 from env.graders import FeasibilityGrader, TargetPRGrader, TargetPREfficiencyGrader
+from env.models import Action, Observation, StepInfo, safe_default_action
 from env.physics import compute_physics
-from env.tasks import FeasibilityTask, TargetPRTask, TargetPREfficiencyTask
+from env.tasks import FeasibilityTask, TargetPRTask, TargetPREfficiencyTask, TASKS
 
 
 def test_apply_action_clamps_state():
@@ -20,10 +21,7 @@ def test_apply_action_clamps_state():
         },
     )
 
-    assert updated["r2"] == 0.2
-    assert updated["blade_angle"] == 80
-    assert updated["b2"] == 0.005
-    assert updated["Z"] == 20
+    assert updated == INIT_PARAMS
 
 
 def test_compute_physics_is_pure_and_derives_geometry():
@@ -104,9 +102,11 @@ def test_env_uses_selected_task():
     env = BladeLabEnv(task_name="target_pr_efficiency")
     obs = env.reset()
 
-    assert obs["feasible"] in (True, False)
+    assert isinstance(obs, Observation)
+    assert obs.feasible in (True, False)
     _, _, _, info = env.step({})
-    assert info["task"] == "target_pr_efficiency"
+    assert isinstance(info, StepInfo)
+    assert info.task == "target_pr_efficiency"
 
 
 def test_graders_follow_task_success_criteria():
@@ -146,3 +146,36 @@ def test_infeasible_design_gets_zero_task_grades():
     assert FeasibilityGrader().grade(physics, constraints) == 0.0
     assert TargetPRGrader().grade(physics, constraints) == 0.0
     assert TargetPREfficiencyGrader().grade(physics, constraints) == 0.0
+
+
+def test_action_model_validates_and_safe_default_is_zero():
+    action = Action(delta_r2=0.001, delta_angle=1.0, delta_b2=0.0005, delta_Z=1)
+    default_action = safe_default_action()
+
+    assert action.delta_r2 == 0.001
+    assert default_action.delta_r2 == 0.0
+    assert default_action.delta_angle == 0.0
+    assert default_action.delta_b2 == 0.0
+    assert default_action.delta_Z == 0
+
+
+def test_env_step_accepts_invalid_action_and_falls_back_safely():
+    env = BladeLabEnv(task_name="feasibility")
+    env.reset()
+    obs, reward, done, info = env.step({"delta_r2": 999, "bad_key": 1})
+
+    assert isinstance(obs, Observation)
+    assert isinstance(info, StepInfo)
+    assert isinstance(reward, float)
+    assert isinstance(done, bool)
+
+
+def test_env_state_returns_typed_observation():
+    env = BladeLabEnv(task_name="feasibility")
+    env.reset()
+
+    assert isinstance(env.state(), Observation)
+
+
+def test_task_registry_contains_three_tasks():
+    assert set(TASKS.keys()) == {"feasibility", "target_pr", "target_pr_efficiency"}

@@ -1,8 +1,10 @@
 from copy import deepcopy
+
 from env import INIT_PARAMS, BOUNDS
+from env.models import Action, Observation, StepInfo, safe_default_action
 from env.physics import compute_physics
 from env.constraints import check_constraints
-from env.tasks import DEFAULT_TASKS, FeasibilityTask
+from env.tasks import TASKS, FeasibilityTask, get_task
 
 
 def clamp(params):
@@ -13,13 +15,25 @@ def clamp(params):
     return params
 
 
+def normalize_action(action):
+    if isinstance(action, Action):
+        return action
+    if isinstance(action, dict):
+        try:
+            return Action(**action)
+        except Exception:
+            return safe_default_action()
+    return safe_default_action()
+
+
 def apply_action(state, action):
+    normalized_action = normalize_action(action)
     new = deepcopy(state)
 
-    new["r2"] += action.get("delta_r2", 0.0)
-    new["blade_angle"] += action.get("delta_angle", 0.0)
-    new["b2"] += action.get("delta_b2", 0.0)
-    new["Z"] += int(action.get("delta_Z", 0))
+    new["r2"] += normalized_action.delta_r2
+    new["blade_angle"] += normalized_action.delta_angle
+    new["b2"] += normalized_action.delta_b2
+    new["Z"] += normalized_action.delta_Z
 
     return clamp(new)
 
@@ -27,7 +41,7 @@ def apply_action(state, action):
 class BladeLabEnv:
 
     def __init__(self, task=None, task_name=None, task_kwargs=None):
-        self.state = None
+        self._state = None
         self.physics = None
         self.constraints = None
         self.prev_physics = None
@@ -39,13 +53,15 @@ class BladeLabEnv:
         if task is not None:
             return task
         if task_name is not None:
-            return DEFAULT_TASKS.create(task_name, **(task_kwargs or {}))
+            if task_kwargs:
+                raise ValueError("Parameterized task construction is not supported by the static TASKS registry.")
+            return get_task(task_name)
         return FeasibilityTask()
 
     def reset(self):
-        self.state = deepcopy(INIT_PARAMS)
+        self._state = deepcopy(INIT_PARAMS)
         self.task.reset()
-        physics = compute_physics(self.state)
+        physics = compute_physics(self._state)
         constraints = check_constraints(physics)
         self.physics = physics
         self.constraints = constraints
@@ -56,17 +72,27 @@ class BladeLabEnv:
         return self._build_obs(physics, constraints)
 
     def step(self, action):
-        self.state = apply_action(self.state, action)
+        normalized_action = normalize_action(action)
+        self._state = apply_action(self._state, normalized_action)
 
-        physics = compute_physics(self.state)
+        physics = compute_physics(self._state)
         constraints = check_constraints(physics)
         reward = self.task.compute_reward(physics, constraints, prev_physics=self.prev_physics)
 
+        next_obs = self._build_obs(physics, constraints)
+
         self.history.append({
-            "mass_flow": physics["mass_flow"],
-            "pressure_ratio": physics["pressure_ratio"],
-            "efficiency": physics["efficiency"],
-            "feasible": constraints["feasible"],
+            "step": self.step_count,
+            "state": self._build_obs(self.prev_physics, check_constraints(self.prev_physics)).model_dump(),
+            "action": normalized_action.model_dump(),
+            "reward": float(reward),
+            "next_state": next_obs.model_dump(),
+            "info": {
+                "task": self.task.name,
+                "constraints": constraints,
+                "success": self.task.is_success(physics, constraints),
+                "step_count": self.step_count + 1,
+            },
         })
 
         self.physics = physics
@@ -76,26 +102,30 @@ class BladeLabEnv:
 
         done = self.task.is_done(self.step_count, physics, constraints)
 
-        info = {
-            "task": self.task.name,
-            "constraints": constraints,
-            "success": self.task.is_success(physics, constraints),
-        }
-        return self._build_obs(physics, constraints), reward, done, info
+        info = StepInfo(
+            task=self.task.name,
+            constraints=constraints,
+            success=self.task.is_success(physics, constraints),
+            step_count=self.step_count,
+        )
+        return next_obs, reward, done, info
 
     def _build_obs(self, physics, constraints):
-        return {
-            "efficiency": physics["efficiency"],
-            "pressure_ratio": physics["pressure_ratio"],
-            "mass_flow": physics["mass_flow"],
-            "feasible": constraints["feasible"],
-            "surge_margin": constraints["surge_margin"],
-            "choke_margin": constraints["choke_margin"],
-            "r2": self.state["r2"],
-            "blade_angle": self.state["blade_angle"],
-            "b2": self.state["b2"],
-            "Z": self.state["Z"],
-        }
+        return Observation(
+            efficiency=physics["efficiency"],
+            pressure_ratio=physics["pressure_ratio"],
+            mass_flow=physics["mass_flow"],
+            feasible=constraints["feasible"],
+            surge_margin=constraints["surge_margin"],
+            choke_margin=constraints["choke_margin"],
+            r2=self._state["r2"],
+            blade_angle=self._state["blade_angle"],
+            b2=self._state["b2"],
+            Z=self._state["Z"],
+        )
+
+    def state(self):
+        return self._build_obs(self.physics, self.constraints)
 
     def get_history(self):
         return self.history

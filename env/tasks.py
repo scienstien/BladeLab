@@ -124,24 +124,15 @@ class TargetPREfficiencyTask(TargetPRTask):
         )
 
 
-class TaskRegistry:
-    def __init__(self):
-        self._tasks = {}
-
-    def register(self, name, task_class):
-        self._tasks[name] = task_class
-
-    def get(self, name):
-        return self._tasks.get(name)
-
-    def create(self, name, **kwargs):
-        task_class = self.get(name)
-        if task_class is None:
-            raise KeyError(f"Unknown task: {name}")
-        return task_class(**kwargs)
+TASKS = {
+    "feasibility": lambda: FeasibilityTask(),
+    "target_pr": lambda: TargetPRTask(),
+    "target_pr_efficiency": lambda: TargetPREfficiencyTask(),
+}
 
 
-DEFAULT_TASKS = TaskRegistry()
-DEFAULT_TASKS.register("feasibility", FeasibilityTask)
-DEFAULT_TASKS.register("target_pr", TargetPRTask)
-DEFAULT_TASKS.register("target_pr_efficiency", TargetPREfficiencyTask)
+def get_task(task_name):
+    try:
+        return TASKS[task_name]()
+    except KeyError as exc:
+        raise KeyError(f"Unknown task: {task_name}") from exc
