@@ -1,9 +1,14 @@
-name: openenv
-channels:
-  - conda-forge
-  - defaults
-dependencies:
-  - python=3.10
-  - pip
-  - pip:
-    - -r requirements.txt
+name: turbodesigner2
+description: Physics-driven compressor optimization environment for turbomachinery design tasks.
+domain: turbomachinery_design
+observation_schema:
+  title: Observation
+  schema: env.models.Observation
+action_schema:
+  title: Action
+  schema: env.models.Action
+tasks:
+  - feasibility
+  - target_pr
+  - target_pr_efficiency
+max_episode_length: 30
