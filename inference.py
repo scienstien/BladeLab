@@ -4,6 +4,10 @@ import os
 import statistics
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import matplotlib.pyplot as plt
 
 from env.core_env import BladeLabEnv
@@ -32,6 +36,8 @@ ACTION_SCALES = {
     "delta_b2": 0.002,
     "delta_Z": 1.0,
 }
+
+
 
 try:
     import torch

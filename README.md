@@ -60,6 +60,8 @@ On Windows PowerShell:
 Copy-Item .env.example .env
 ```
 
+All runtime entrypoints import the template through `python-dotenv`, so copying the template is enough for the local scripts and `flask` app to pick up those values.
+
 Variables used by the current code paths:
 
 - `OPENAI_API_KEY`: required only when using the OpenAI-backed policy paths
