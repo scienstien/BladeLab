@@ -16,14 +16,7 @@ from inference import (
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
-# Valid task names
-VALID_TASKS = list(TASKS.keys())
-
-# Valid policy types
-VALID_POLICY_TYPES = ["heuristic", "openai"]
-
-# Default max steps
-DEFAULT_MAX_STEPS = 100
+# Constants and validation moved to schemas.py
 
 
 def _validation_response(details):
@@ -44,10 +37,6 @@ def _json_payload():
     if not isinstance(payload, dict):
         return None
     return payload
-
-
-def _is_positive_int(value):
-    return isinstance(value, int) and value > 0
 
 
 @bp.errorhandler(ValidationError)
@@ -80,20 +69,7 @@ def predict():
 
     req = PredictRequest.model_validate(payload)
 
-    details = []
-    if req.task_name not in VALID_TASKS:
-        details.append(
-            f"task_name: invalid task '{req.task_name}'. Valid tasks: {VALID_TASKS}"
-        )
-    if req.policy_type not in VALID_POLICY_TYPES:
-        details.append(
-            f"policy_type: invalid policy '{req.policy_type}'. Valid policy types: {VALID_POLICY_TYPES}"
-        )
-    if req.policy_type == "openai" and not req.model_name:
-        details.append("model_name: required when policy_type is 'openai'")
-
-    if details:
-        return _validation_response(details)
+    # Validation handled by Pydantic
 
     try:
         if req.policy_type == "heuristic":
@@ -174,28 +150,7 @@ def rollout():
 
     req = RolloutRequest.model_validate(payload)
 
-    details = []
-    if "task_name" not in payload:
-        details.append("task_name: field is required")
-    if "policy_type" not in payload:
-        details.append("policy_type: field is required")
-    if req.task_name not in VALID_TASKS:
-        details.append(
-            f"task_name: invalid task '{req.task_name}'. Valid tasks: {VALID_TASKS}"
-        )
-    if req.policy_type not in VALID_POLICY_TYPES:
-        details.append(
-            f"policy_type: invalid policy '{req.policy_type}'. Valid policy types: {VALID_POLICY_TYPES}"
-        )
-
-    max_steps = req.max_steps if "max_steps" in payload else DEFAULT_MAX_STEPS
-    if not _is_positive_int(max_steps):
-        details.append("max_steps: must be a positive integer")
-    if req.policy_type == "openai" and not req.model_name:
-        details.append("model_name: required when policy_type is 'openai'")
-
-    if details:
-        return _validation_response(details)
+    # Validation and defaults handled by Pydantic
 
     # Load the appropriate policy
     try:
@@ -220,16 +175,26 @@ def rollout():
 
     # Run the episode
     try:
-        result = run_episode(env, agent, max_steps=max_steps)
+        result = run_episode(env, agent, max_steps=req.max_steps)
     except Exception as e:
         return jsonify({"error": f"Episode execution failed: {str(e)}"}), 500
+
+    # Determine success based on the specific task requirements
+    # Each task type has a different primary metric that must reach 1.0 to reflect true completion.
+    if req.task_name == "target_pr":
+        is_success = result["pr_score"] == 1.0
+    elif req.task_name == "target_pr_efficiency":
+        is_success = result["efficiency_score"] == 1.0
+    else:
+        # Default to feasibility score for "feasibility" task and any other unhandled tasks
+        is_success = result["feasible_score"] == 1.0
 
     # Build structured response
     response = {
         "trajectory": result["trajectory"],
         "total_reward": result["total_reward"],
         "final_state": result["final_state"],
-        "success": result["feasible_score"] == 1.0,  # Success based on feasibility
+        "success": is_success,
         "steps": len(result["trajectory"]),
         "scores": {
             "feasibility_score": result["feasible_score"],
@@ -272,26 +237,7 @@ def evaluate():
 
     req = EvaluateRequest.model_validate(payload)
 
-    details = []
-    if "task_name" not in payload:
-        details.append("task_name: field is required")
-    if req.task_name not in VALID_TASKS:
-        details.append(
-            f"task_name: invalid task '{req.task_name}'. Valid tasks: {VALID_TASKS}"
-        )
-    if req.policy_type not in VALID_POLICY_TYPES:
-        details.append(
-            f"policy_type: invalid policy '{req.policy_type}'. Valid policy types: {VALID_POLICY_TYPES}"
-        )
-    if not _is_positive_int(req.num_episodes):
-        details.append("num_episodes: must be a positive integer")
-    if req.max_steps is not None and not _is_positive_int(req.max_steps):
-        details.append("max_steps: must be a positive integer or null")
-    if req.policy_type == "openai" and not req.model_name:
-        details.append("model_name: required when policy_type is 'openai'")
-
-    if details:
-        return _validation_response(details)
+    # Validation handled by Pydantic
 
     # Load the appropriate policy
     try:

@@ -2,10 +2,12 @@
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator
 
 from env.models import Action, Observation
+from env.tasks import TASKS
 
+VALID_TASKS = list(TASKS.keys())
 
 # =============================================================================
 # Request Schemas
@@ -18,6 +20,13 @@ class PredictRequest(BaseModel):
     policy_type: Literal["heuristic", "openai"] = "heuristic"
     model_name: Optional[str] = None
 
+    @field_validator("task_name")
+    @classmethod
+    def validate_task_name(cls, v):
+        if v not in VALID_TASKS:
+            raise ValueError(f"invalid task '{v}'. Valid tasks: {VALID_TASKS}")
+        return v
+
     @model_validator(mode="after")
     def validate_openai_model_name(self) -> "PredictRequest":
         if self.policy_type == "openai" and not self.model_name:
@@ -29,8 +38,15 @@ class RolloutRequest(BaseModel):
     """Request schema for rollout/trajectory endpoint"""
     task_name: str
     policy_type: Literal["heuristic", "openai"]
-    max_steps: int = 100
+    max_steps: int = Field(default=100, gt=0)
     model_name: Optional[str] = None
+
+    @field_validator("task_name")
+    @classmethod
+    def validate_task_name(cls, v):
+        if v not in VALID_TASKS:
+            raise ValueError(f"invalid task '{v}'. Valid tasks: {VALID_TASKS}")
+        return v
 
     @model_validator(mode="after")
     def validate_openai_model_name(self) -> "RolloutRequest":
@@ -43,9 +59,16 @@ class EvaluateRequest(BaseModel):
     """Request schema for multi-episode evaluation endpoint"""
     task_name: str
     policy_type: Literal["heuristic", "openai"] = "heuristic"
-    num_episodes: int = 10
-    max_steps: Optional[int] = None
+    num_episodes: int = Field(default=10, gt=0)
+    max_steps: Optional[int] = Field(default=None, gt=0)
     model_name: Optional[str] = None
+
+    @field_validator("task_name")
+    @classmethod
+    def validate_task_name(cls, v):
+        if v not in VALID_TASKS:
+            raise ValueError(f"invalid task '{v}'. Valid tasks: {VALID_TASKS}")
+        return v
 
     @model_validator(mode="after")
     def validate_openai_model_name(self) -> "EvaluateRequest":
