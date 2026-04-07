@@ -224,12 +224,22 @@ def rollout():
     except Exception as e:
         return jsonify({"error": f"Episode execution failed: {str(e)}"}), 500
 
+    # Determine success based on the specific task requirements
+    # Each task type has a different primary metric that must reach 1.0 to reflect true completion.
+    if req.task_name == "target_pr":
+        is_success = result["pr_score"] == 1.0
+    elif req.task_name == "target_pr_efficiency":
+        is_success = result["efficiency_score"] == 1.0
+    else:
+        # Default to feasibility score for "feasibility" task and any other unhandled tasks
+        is_success = result["feasible_score"] == 1.0
+
     # Build structured response
     response = {
         "trajectory": result["trajectory"],
         "total_reward": result["total_reward"],
         "final_state": result["final_state"],
-        "success": result["feasible_score"] == 1.0,  # Success based on feasibility
+        "success": is_success,
         "steps": len(result["trajectory"]),
         "scores": {
             "feasibility_score": result["feasible_score"],
