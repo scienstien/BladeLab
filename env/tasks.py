@@ -1,20 +1,24 @@
 """Concrete optimization tasks for the environment."""
 
 from env.config import CHOKE_LIMIT, MAX_STEPS, PR_TARGET, SURGE_LIMIT
-from env.reward import efficiency_bonus, infeasibility_penalty, quadratic_target_penalty
+from env.reward import compute_score
 
 
 class Task:
-    def __init__(self, name, description="", max_steps=MAX_STEPS):
+    def __init__(self, name, description="", max_steps=MAX_STEPS, reward_scale=10.0):
         self.name = name
         self.description = description
         self.max_steps = max_steps
+        self.reward_scale = reward_scale
 
     def reset(self):
         return None
 
     def compute_reward(self, physics, constraints, prev_physics=None):
         raise NotImplementedError
+
+    def score(self, physics, constraints):
+        return compute_score(physics, constraints, self)
 
     def is_success(self, physics, constraints):
         raise NotImplementedError
@@ -34,13 +38,7 @@ class FeasibilityTask(Task):
         self.choke_limit = choke_limit
 
     def compute_reward(self, physics, constraints, prev_physics=None):
-        reward = -0.01
-        if not constraints["feasible"]:
-            reward -= 10.0 + infeasibility_penalty(constraints, margin_weight=20.0)
-        if constraints["feasible"]:
-            reward += 2.0
-            reward += 0.5 * min(constraints["surge_margin"], constraints["choke_margin"])
-        return reward
+        return self.reward_scale * self.score(physics, constraints)
 
     def is_success(self, physics, constraints):
         return constraints["feasible"]
@@ -66,19 +64,7 @@ class TargetPRTask(Task):
         self.choke_limit = choke_limit
 
     def compute_reward(self, physics, constraints, prev_physics=None):
-        pr_error = abs(physics["pressure_ratio"] - self.target_pr)
-        reward = -0.01
-
-        if not constraints["feasible"]:
-            reward -= 12.0 + infeasibility_penalty(constraints, margin_weight=25.0)
-        else:
-            reward += 3.0
-
-        reward -= quadratic_target_penalty(physics["pressure_ratio"], self.target_pr, weight=8.0)
-        if pr_error <= self.pr_tolerance and constraints["feasible"]:
-            reward += 2.0
-
-        return reward
+        return self.reward_scale * self.score(physics, constraints)
 
     def is_success(self, physics, constraints):
         return constraints["feasible"] and abs(physics["pressure_ratio"] - self.target_pr) <= self.pr_tolerance
@@ -106,16 +92,7 @@ class TargetPREfficiencyTask(TargetPRTask):
         self.min_efficiency = min_efficiency
 
     def compute_reward(self, physics, constraints, prev_physics=None):
-        reward = super().compute_reward(physics, constraints, prev_physics=prev_physics)
-
-        if constraints["feasible"]:
-            reward += efficiency_bonus(physics, weight=5.0)
-            if physics["efficiency"] >= self.min_efficiency:
-                reward += 1.5
-        else:
-            reward -= 2.0
-
-        return reward
+        return self.reward_scale * self.score(physics, constraints)
 
     def is_success(self, physics, constraints):
         return (

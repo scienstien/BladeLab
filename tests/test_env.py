@@ -35,6 +35,21 @@ def test_compute_physics_is_pure_and_derives_geometry():
     assert physics["losses"] == sum(physics["loss_breakdown"].values())
 
 
+def test_compute_physics_respects_configurable_inlet_blade_angle():
+    baseline_state = deepcopy(INIT_PARAMS)
+    baseline_physics = compute_physics(baseline_state)
+
+    adjusted_state = deepcopy(INIT_PARAMS)
+    adjusted_state["inlet_blade_angle"] = 45.0
+    adjusted_physics = compute_physics(adjusted_state)
+
+    assert baseline_physics["W1"] != adjusted_physics["W1"]
+    assert (
+        baseline_physics["loss_breakdown"]["skin_friction"]
+        != adjusted_physics["loss_breakdown"]["skin_friction"]
+    )
+
+
 def test_constraints_detect_feasible_and_infeasible_regions():
     base_physics = compute_physics(deepcopy(INIT_PARAMS))
     feasible_case = dict(base_physics)
@@ -131,6 +146,45 @@ def test_graders_follow_task_success_criteria():
     assert 0.0 <= feasibility_grader.grade(physics, constraints) <= 1.0
     assert 0.0 <= pr_grader.grade(physics, constraints) <= 1.0
     assert 0.0 <= hard_grader.grade(physics, constraints) <= 1.0
+
+
+def test_shared_score_matches_scaled_reward_and_grader():
+    task = TargetPREfficiencyTask(target_pr=PR_TARGET, pr_tolerance=0.05, min_efficiency=0.75)
+    grader = TargetPREfficiencyGrader(task=task)
+    physics = {"pressure_ratio": PR_TARGET + 0.02, "efficiency": 0.78}
+    constraints = {
+        "feasible": True,
+        "surge": False,
+        "choke": False,
+        "surge_margin": 0.1,
+        "choke_margin": 0.1,
+    }
+
+    score = grader.grade(physics, constraints)
+    reward = task.compute_reward(physics, constraints)
+
+    assert abs(task.score(physics, constraints) - score) < 1e-9
+    assert abs((reward / task.reward_scale) - score) < 1e-9
+
+
+def test_task_success_is_true_at_boundary_without_requiring_score_one():
+    pr_task = TargetPRTask(target_pr=PR_TARGET, pr_tolerance=0.05)
+    hard_task = TargetPREfficiencyTask(target_pr=PR_TARGET, pr_tolerance=0.05, min_efficiency=0.75)
+    pr_grader = TargetPRGrader(task=pr_task)
+    hard_grader = TargetPREfficiencyGrader(task=hard_task)
+    physics = {"pressure_ratio": PR_TARGET + 0.05, "efficiency": 0.75}
+    constraints = {
+        "feasible": True,
+        "surge": False,
+        "choke": False,
+        "surge_margin": 0.1,
+        "choke_margin": 0.1,
+    }
+
+    assert pr_task.is_success(physics, constraints) is True
+    assert hard_task.is_success(physics, constraints) is True
+    assert pr_grader.grade(physics, constraints) < 1.0
+    assert hard_grader.grade(physics, constraints) < 1.0
 
 
 def test_infeasible_design_gets_zero_task_grades():

@@ -5,7 +5,6 @@ from pydantic import ValidationError
 
 from api.schemas import EvaluateRequest, PredictRequest, RolloutRequest
 from env.core_env import BladeLabEnv
-from env.tasks import TASKS
 from inference import (
     Agent,
     HeuristicPolicy,
@@ -37,6 +36,16 @@ def _json_payload():
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+def _rollout_success(env, result):
+    """
+    Use the task's own success definition so API output matches environment semantics.
+    """
+    try:
+        return env.task.is_success(result["final_physics"], result["final_constraints"])
+    except Exception:
+        return bool(result["final_constraints"].get("feasible", False))
 
 
 @bp.errorhandler(ValidationError)
@@ -179,15 +188,8 @@ def rollout():
     except Exception as e:
         return jsonify({"error": f"Episode execution failed: {str(e)}"}), 500
 
-    # Determine success based on the specific task requirements
-    # Each task type has a different primary metric that must reach 1.0 to reflect true completion.
-    if req.task_name == "target_pr":
-        is_success = result["pr_score"] == 1.0
-    elif req.task_name == "target_pr_efficiency":
-        is_success = result["efficiency_score"] == 1.0
-    else:
-        # Default to feasibility score for "feasibility" task and any other unhandled tasks
-        is_success = result["feasible_score"] == 1.0
+    # Use the task's own completion predicate rather than a score equality check.
+    is_success = _rollout_success(env, result)
 
     # Build structured response
     response = {

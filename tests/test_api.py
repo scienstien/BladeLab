@@ -9,6 +9,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from env.config import PR_TARGET
+
 
 @pytest.fixture
 def client():
@@ -132,6 +134,57 @@ class TestAPI:
         assert "success" in response.json
         assert "steps" in response.json
         assert "scores" in response.json
+
+    def test_rollout_success_uses_task_boundary_not_score_equality(self, client, monkeypatch):
+        """Boundary success should remain true even when normalized score is below 1.0."""
+
+        def fake_run_episode(env, agent, max_steps=None):
+            return {
+                "trajectory": [],
+                "total_reward": 9.8,
+                "final_state": {
+                    "efficiency": 0.8,
+                    "pressure_ratio": PR_TARGET + 0.05,
+                    "mass_flow": 0.9,
+                    "feasible": True,
+                    "surge_margin": 0.1,
+                    "choke_margin": 0.1,
+                    "r2": 0.08,
+                    "blade_angle": 60.0,
+                    "b2": 0.012,
+                    "Z": 7,
+                },
+                "final_physics": {
+                    "efficiency": 0.8,
+                    "pressure_ratio": PR_TARGET + 0.05,
+                    "mass_flow": 0.9,
+                },
+                "final_constraints": {
+                    "feasible": True,
+                    "surge": False,
+                    "choke": False,
+                    "surge_margin": 0.1,
+                    "choke_margin": 0.1,
+                },
+                "feasible_score": 0.775,
+                "pr_score": 0.98,
+                "efficiency_score": 0.988,
+            }
+
+        monkeypatch.setattr("api.routes.run_episode", fake_run_episode)
+
+        response = client.post(
+            "/api/rollout",
+            json={
+                "task_name": "target_pr",
+                "policy_type": "heuristic",
+            },
+            content_type="application/json",
+        )
+
+        assert response.status_code == 200
+        assert response.json["scores"]["pr_score"] == pytest.approx(0.98)
+        assert response.json["success"] is True
 
     def test_rollout_openai_requires_model_name(self, client):
         """Test rollout endpoint requires model_name for openai policy."""

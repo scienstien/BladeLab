@@ -62,7 +62,7 @@ def skin_friction_loss(params):
     wetted_perimeter = 2 * (2 * math.pi * r2 + b2)
     hydraulic_diameter = 4 * area / wetted_perimeter
 
-    beta1 = math.radians(30.0)
+    beta1 = math.radians(params.get("inlet_blade_angle", 30.0))
     beta2 = math.radians(params["blade_angle"])
     beta_m = (2 * beta2 + beta1) / 3.0
 

@@ -7,6 +7,7 @@ INIT_PARAMS = {
     "r2": 0.08,
     "b2": 0.012,
     "Z": 7,
+    "inlet_blade_angle": 30.0,
     "blade_angle": 60.0,
     "alpha2": 60.0,
     "Cp": 1005,

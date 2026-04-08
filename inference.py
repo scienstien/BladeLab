@@ -8,11 +8,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import matplotlib.pyplot as plt
-
 from env.core_env import BladeLabEnv
 from env.graders import grade_efficiency, grade_feasibility, grade_target_pr
 from env.models import Action, Observation, safe_default_action
+from env.tasks import get_task
 
 
 STATE_KEYS = [
@@ -391,6 +390,8 @@ def evaluate_agent(agent, task_name, num_episodes=10, max_steps=None):
 
 
 def plot_trajectory(trajectory, title="Rollout Trajectory"):
+    import matplotlib.pyplot as plt
+
     steps = list(range(len(trajectory)))
     prs = [step["next_state"]["pressure_ratio"] for step in trajectory]
     efficiencies = [step["next_state"]["efficiency"] for step in trajectory]
@@ -454,6 +455,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if not args.openai and args.checkpoint is None:
+        args.heuristic = True
+
+    model_label = args.model if args.openai else (args.checkpoint or "heuristic")
+    log_start(args.task, "turbodesigner2", model_label)
+
     if args.openai:
         agent = Agent(load_openai_policy(args.task, args.model))
     else:
@@ -467,9 +474,23 @@ def main():
     )
 
     first_episode = summary["episodes"][0]
-    print_episode_result(first_episode)
-    print()
-    print_evaluation_summary(summary)
+    task = get_task(args.task)
+    successes = [
+        task.is_success(result["final_physics"], result["final_constraints"])
+        for result in summary["episodes"]
+    ]
+    if args.task == "target_pr":
+        score = statistics.mean(result["pr_score"] for result in summary["episodes"])
+    elif args.task == "target_pr_efficiency":
+        score = statistics.mean(result["efficiency_score"] for result in summary["episodes"])
+    else:
+        score = statistics.mean(result["feasible_score"] for result in summary["episodes"])
+    log_end(
+        success=all(successes),
+        steps=sum(len(result["trajectory"]) for result in summary["episodes"]),
+        score=score,
+        rewards=[result["total_reward"] for result in summary["episodes"]],
+    )
 
     if args.plot:
         plot_trajectory(first_episode["trajectory"], title=f"Rollout Trajectory - {args.task}")

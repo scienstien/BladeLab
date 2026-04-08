@@ -15,7 +15,7 @@ def compute_velocity_triangles(params):
 
     beta2 = math.radians(params["blade_angle"])   # outlet blade angle
     alpha2 = math.radians(params["alpha2"])       # flow angle
-    beta1 = math.radians(30.0)   # 
+    beta1 = math.radians(params.get("inlet_blade_angle", 30.0))
 
     omega = rpm * 2 * math.pi / 60
 

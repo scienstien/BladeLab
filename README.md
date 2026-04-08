@@ -1,6 +1,12 @@
+---
+title: turbodesigner2
+sdk: docker
+app_port: 8000
+---
+
 # TurboDesigner 2.0
 
-A machine learning-powered design optimization tool.
+Physics-driven turbomachinery design environment with both a local Flask API and an OpenEnv-compatible FastAPI server.
 
 ## Project Structure
 
@@ -18,21 +24,19 @@ turbodesigner2.0/
 ├── tests/              # Test suite
 │   ├── test_api.py
 │   └── test_env.py
-├── inference.py        # ML inference loop
-├── openenv.yaml        # Conda environment
+├── client.py           # OpenEnv client wrapper
+├── models.py           # OpenEnv-facing models
+├── server/             # OpenEnv FastAPI server
+├── inference.py        # Baseline inference loop
+├── openenv.yaml        # OpenEnv manifest
+├── pyproject.toml      # OpenEnv packaging metadata
+├── uv.lock             # uv lockfile
 ├── Dockerfile
 ├── requirements.txt
 └── README.md
 ```
 
 ## Setup
-
-### Using Conda
-
-```bash
-conda env create -f openenv.yaml
-conda activate openenv
-```
 
 ### Using pip
 
@@ -68,6 +72,7 @@ Variables used by the current code paths:
 - `MODEL_NAME`: optional; defaults to `gpt-4.1-mini`
 - `API_BASE_URL`: optional; takes precedence over `OPENAI_BASE_URL` when both are set
 - `OPENAI_BASE_URL`: optional fallback for OpenAI-compatible endpoints
+- `HF_TOKEN`: optional token for Hugging Face Space deployment or push workflows
 
 You only need OpenAI credentials when:
 
@@ -78,13 +83,19 @@ Heuristic policy flows and the current test suite do not require `OPENAI_API_KEY
 
 ## Usage
 
-### Run the API
+### Run the OpenEnv Server
+
+```bash
+python -m server.app --port 8000
+```
+
+### Run the Flask API
 
 ```bash
 python -m api.app
 ```
 
-### Run Inference
+### Run Baseline Inference
 
 ```bash
 python inference.py
@@ -93,7 +104,7 @@ python inference.py
 ### Run Tests
 
 ```bash
-pytest tests/
+python -m pytest tests/
 ```
 
 ## Docker
@@ -102,21 +113,27 @@ Build and run with Docker:
 
 ```bash
 docker build -t turbodesigner2.0 .
-docker run -p 5000:5000 turbodesigner2.0
+docker run -p 8000:8000 turbodesigner2.0
 ```
 
 To use the OpenAI-backed policy in Docker, pass env vars at runtime instead of
 baking secrets into the image:
 
 ```bash
-docker run --env-file .env -p 5000:5000 turbodesigner2.0
+docker run --env-file .env -p 8000:8000 turbodesigner2.0
 ```
 
-## API Endpoints
+For OpenEnv validation, the image should expose the FastAPI app on port `8000`.
+
+## Endpoints
 
 - `GET /api/health` - Health check
 - `POST /api/predict` - Run prediction
 - `GET /api/tasks` - List available tasks
+- `POST /reset` - OpenEnv reset endpoint
+- `POST /step` - OpenEnv step endpoint
+- `GET /state` - OpenEnv state endpoint
+- `GET /schema` - OpenEnv action/observation schema endpoint
 
 ## License
 

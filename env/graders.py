@@ -1,11 +1,8 @@
 """Task-aware grading helpers for TurboDesigner 2.0."""
 
 from env.config import PR_TARGET
+from env.reward import compute_score
 from env.tasks import FeasibilityTask, TargetPRTask, TargetPREfficiencyTask
-
-
-def clamp_score(value):
-    return max(0.0, min(1.0, value))
 
 
 class Grader:
@@ -36,10 +33,7 @@ class FeasibilityGrader(Grader):
         self.task = task or FeasibilityTask()
 
     def grade(self, physics, constraints):
-        if constraints["feasible"]:
-            margin_bonus = min(constraints["surge_margin"], constraints["choke_margin"])
-            return clamp_score(0.75 + 0.25 * max(0.0, margin_bonus))
-        return 0.0
+        return compute_score(physics, constraints, self.task)
 
     def passed(self, physics, constraints):
         return self.task.is_success(physics, constraints)
@@ -50,12 +44,7 @@ class TargetPRGrader(Grader):
         self.task = task or TargetPRTask()
 
     def grade(self, physics, constraints):
-        if not constraints["feasible"]:
-            return 0.0
-
-        pr_error = abs(physics["pressure_ratio"] - self.task.target_pr)
-        normalized_error = pr_error / max(self.task.target_pr, 1e-6)
-        return clamp_score(1.0 - normalized_error)
+        return compute_score(physics, constraints, self.task)
 
     def passed(self, physics, constraints):
         return self.task.is_success(physics, constraints)
@@ -64,15 +53,9 @@ class TargetPRGrader(Grader):
 class TargetPREfficiencyGrader(Grader):
     def __init__(self, task=None):
         self.task = task or TargetPREfficiencyTask()
-        self.pr_grader = TargetPRGrader(task=self.task)
 
     def grade(self, physics, constraints):
-        if not constraints["feasible"]:
-            return 0.0
-
-        pr_score = self.pr_grader.grade(physics, constraints)
-        efficiency_score = clamp_score(physics["efficiency"] / max(self.task.min_efficiency, 1e-6))
-        return clamp_score(0.6 * pr_score + 0.4 * efficiency_score)
+        return compute_score(physics, constraints, self.task)
 
     def passed(self, physics, constraints):
         return self.task.is_success(physics, constraints)

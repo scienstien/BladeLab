@@ -34,5 +34,11 @@ class StepInfo(BaseModel):
     step_count: int
 
 
+class Reward(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: float
+
+
 def safe_default_action() -> Action:
     return Action()
