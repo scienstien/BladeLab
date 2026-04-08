@@ -3,47 +3,59 @@ import math
 from env.config import COEFFS
 from env.velocity import compute_mass_flow, compute_velocity_triangles
 
+EPS = 1e-6
+
+
+def _safe_div(numerator, denominator):
+    return numerator / (denominator if abs(denominator) > EPS else (EPS if denominator >= 0 else -EPS))
+
+
+def _smooth_positive(value):
+    return 0.5 * (value + math.sqrt(value * value + EPS))
+
 
 def blade_loading_loss(params):
-    W1 = params["W1"]
-    W2 = params["W2"]
-    U2 = params["U2"]
-    D1 = params["D1"]
-    D2 = params["D2"]
-    z = params["Z"]
-    Cp = params["Cp"]
-    T1 = params["T1"]
-    T2 = params["T2"]
+    W1 = max(params["W1"], EPS)
+    W2 = max(params["W2"], EPS)
+    U2 = max(abs(params["U2"]), EPS)
+    D1 = max(params["D1"], EPS)
+    D2 = max(params["D2"], D1 + EPS)
+    z = max(params["Z"], 1)
+    b2 = max(params.get("b2", 0.01), EPS)
+    Cu2 = abs(params.get("Cu2", 0.0))
 
-    K_bl = COEFFS["k_bl"]
+    mean_radius = 0.25 * (D1 + D2)
+    blade_pitch = 2.0 * math.pi * mean_radius / z
+    chord = math.hypot(0.5 * (D2 - D1), b2)
+    solidity = max(chord / max(blade_pitch, EPS), 0.3)
+    diffusion_factor = 1.0 - _safe_div(W2, W1) + _safe_div(Cu2, 2.0 * solidity * W1)
+    diffusion_factor = _smooth_positive(diffusion_factor)
 
-    term1 = 1 - (W2 / W1)
-    term2 = (Cp * (T2 - T1)) / (U2**2)
-    term3 = W1 / U2
-    term4 = z / math.pi * (1 - D1 / D2) + 2 * D1 / D2
-
-    loss = 0.5 * (term1 + term2 / (term3 * term4))**2 * U2**2
-    return K_bl * loss
+    return COEFFS["k_bl"] * 0.5 * diffusion_factor**2 * U2**2
 
 
 def incidence_loss(params):
-    W1 = params["W1"]
-    F_mc = COEFFS["k_inc"]
+    W1 = max(params["W1"], EPS)
+    U1 = max(abs(params.get("U1", 0.0)), EPS)
+    Ca = abs(params.get("Ca", 0.0))
+    beta1_metal = math.radians(params.get("inlet_blade_angle", 30.0))
+    beta1_flow = math.atan2(Ca, U1)
+    incidence = beta1_metal - beta1_flow
 
-    return F_mc * (W1**2) / 2
+    return COEFFS["k_inc"] * 0.5 * W1**2 * (math.sin(incidence) ** 2) * (1.0 + _safe_div(W1, U1))
 
 
 def disk_friction_loss(params):
-    rho = params["rho1"]
-    mu = params["mu"]
-    U2 = params["U2"]
-    r2 = params["r2"]
-    m_dot = params["m_dot"]
+    rho = max(params["rho1"], EPS)
+    mu = max(params["mu"], EPS)
+    U2 = max(abs(params["U2"]), EPS)
+    r2 = max(params["r2"], EPS)
+    m_dot = max(params["m_dot"], EPS)
 
-    term1 = 0.0402 * rho * (U2 / r2)**3 * (r2**5)
-    term2 = (U2 * r2 * rho / mu)**0.2
+    reynolds = max(rho * U2 * r2 / mu, EPS)
+    friction_coeff = 0.031 / (reynolds**0.2)
 
-    return term1 / (term2 * m_dot)
+    return friction_coeff * rho * U2**3 * r2**2 / m_dot
 
 
 def skin_friction_loss(params):
@@ -51,83 +63,85 @@ def skin_friction_loss(params):
 
     D1 = params["D1"]
     D2 = params["D2"]
-    b2 = params["b2"]
-    W1 = params["W1"]
-    W2 = params["W2"]
+    b2 = max(params["b2"], EPS)
+    b1 = max(params.get("b1", 1.35 * b2), EPS)
+    W1 = max(params["W1"], EPS)
+    W2 = max(params["W2"], EPS)
+    Z = max(params.get("Z", 1), 1)
 
     r1 = D1 / 2.0
     r2 = D2 / 2.0
+    r_mean = 0.5 * (r1 + r2)
+    b_mean = 0.5 * (b1 + b2)
 
-    area = 2 * math.pi * r2 * b2
-    wetted_perimeter = 2 * (2 * math.pi * r2 + b2)
-    hydraulic_diameter = 4 * area / wetted_perimeter
+    pitch = 2.0 * math.pi * r_mean / Z
+    area = b_mean * pitch
+    wetted_perimeter = 2.0 * (b_mean + pitch)
+    hydraulic_diameter = max(4.0 * area / max(wetted_perimeter, EPS), EPS)
 
     beta1 = math.radians(params.get("inlet_blade_angle", 30.0))
     beta2 = math.radians(params["blade_angle"])
-    beta_m = (2 * beta2 + beta1) / 3.0
+    beta_m = 0.5 * (beta1 + beta2)
 
-    path_length = (r2 - r1) / math.cos(beta_m)
+    path_length = abs(r2 - r1) / max(abs(math.cos(beta_m)), 0.1)
     mean_relative_velocity = (W1 + W2) / 2.0
 
-    return Cf * (path_length / hydraulic_diameter) * mean_relative_velocity**2
+    return 0.5 * Cf * (path_length / hydraulic_diameter) * mean_relative_velocity**2
 
 
 def clearance_loss(params):
-    epsilon = params["clearance"]
-    b2 = params["b2"]
-    Z = params["Z"]
+    epsilon = max(params["clearance"], 0.0)
+    b2 = max(params["b2"], EPS)
+    Z = max(params["Z"], 1)
 
-    r2 = params["r2"]
-    rs1 = params["r1"]
-    rh1 = 0.0
-    rho1 = params["rho1"]
-    rho2 = params["rho2"]
-    U2 = params["U2"]
+    r2 = max(params["r2"], EPS)
+    rs1 = max(params["r1"], EPS)
+    b1 = max(params.get("b1", 1.35 * b2), EPS)
+    rh1 = max(params.get("rh1", rs1 - b1), EPS)
+    rho1 = max(params["rho1"], EPS)
+    rho2 = max(params["rho2"], EPS)
+    U2 = max(abs(params["U2"]), EPS)
     Ctheta2 = params["Cu2"]
-    Cm2 = params["Ca"]
+    Cm2 = abs(params["Ca"])
 
-    geom_term = ((rs1**2 - rh1**2) / ((r2 - rs1) * (1 + rho2 / rho1))) if r2 != rs1 else 0.0
-    flow_term = (Ctheta2 / U2) * (Cm2 / U2)
+    geom_denominator = max((r2 - rs1) * (1.0 + rho2 / rho1), EPS)
+    geom_term = max((rs1**2 - rh1**2) / geom_denominator, 0.0)
+    flow_term = max(_safe_div(Ctheta2, U2) * _safe_div(Cm2, U2), 0.0)
     normalized_loss = (
         0.6
         * (epsilon / b2)
-        * (Ctheta2 / U2)
-        * math.sqrt((4 * math.pi / (b2 * Z)) * geom_term * flow_term)
+        * abs(Ctheta2) / U2
+        * math.sqrt(max((4.0 * math.pi / max(b2 * Z, EPS)) * geom_term * flow_term, 0.0))
     )
     return normalized_loss * U2**2
 
 
 def leakage_loss(params):
-    m_dot = params["m_dot"]
-    Uc = params["Uc"]
-    U2 = params["U2"]
+    clearance = max(params.get("clearance", 0.0), 0.0)
+    b2 = max(params.get("b2", 0.01), EPS)
+    U2 = max(abs(params["U2"]), EPS)
+    Uc = abs(params.get("Uc", 0.1 * U2))
+    Cu2 = max(params.get("Cu2", 0.0), 0.0)
+    rho2 = max(params.get("rho2", params.get("rho1", 1.0)), EPS)
+    k_leak = params.get("k_leak", COEFFS.get("k_leak", 0.02))
 
-    return (m_dot * Uc * U2) / (2 * m_dot + 1e-6)
+    delta_p = rho2 * max(U2 * Cu2, 0.0)
+    leakage_velocity = math.sqrt(max(2.0 * delta_p / rho2, 0.0) + EPS)
+    leakage_factor = k_leak * (clearance / b2) * (1.0 + _safe_div(Uc, U2))
+
+    return 0.5 * leakage_factor * leakage_velocity**2
 
 
 def recirculation_loss(params):
-    W1 = params["W1"]
-    W2 = params["W2"]
-    U2 = params["U2"]
+    U2 = max(abs(params["U2"]), EPS)
+    Ca = abs(params.get("Ca", 0.0))
+    Cu2 = max(abs(params.get("Cu2", 0.0)), EPS)
+    alpha2_target = math.radians(params.get("alpha2", 60.0))
+    alpha2_flow = math.atan2(Ca, Cu2)
+    flow_deviation = alpha2_target - alpha2_flow
+    phi = params.get("phi", _safe_div(Ca, U2))
 
-    D1 = params["D1"]
-    D2 = params["D2"]
-    z = params["Z"]
-
-    Cp = params["Cp"]
-    T1 = params["T1"]
-    T2 = params["T2"]
-
-    alpha2 = math.radians(params["alpha2"])
-
-    term1 = 1 - W2 / W1
-    term2 = (Cp * (T2 - T1)) / (U2**2)
-    term3 = W1 / U2
-    term4 = z / math.pi * (1 - D1 / D2) + 2 * D1 / D2
-
-    core = term1 + term2 / (term3 * term4)
-
-    return 0.02 * math.tan(alpha2) * (core**2) * U2**2
+    return 0.5 * 0.02 * U2**2 * (math.tan(flow_deviation) ** 2) * (1.0 + max(phi, 0.0))
 
 
 def compute_losses(params):
@@ -143,14 +157,24 @@ def compute_losses(params):
 
 
 def compute_efficiency(head, losses):
-    return max(0.0, (head - losses) / (head + 1e-6))
+    head = max(head, EPS)
+    losses = max(losses, 0.0)
+    return min(0.98, max(EPS, head / (head + losses + EPS)))
 
 
 def compute_pressure_ratio(head, losses, params):
-    gamma = 1.4
-    term = 1 + (head - losses) / (params["Cp"] * params["T1"])
-    term = max(1e-6, term)
-    return term ** ((gamma - 1) / gamma)
+    gamma = params.get("gamma", 1.4)
+    cp = max(params["Cp"], EPS)
+    t1 = max(params["T1"], EPS)
+    efficiency = compute_efficiency(head, losses)
+    isentropic_head = max(efficiency * max(head, 0.0), 0.0)
+    temperature_ratio = 1.0 + isentropic_head / (cp * t1)
+    raw_pressure_ratio = max(1.0, temperature_ratio ** (gamma / max(gamma - 1.0, EPS)))
+    max_pressure_ratio = max(params.get("max_pressure_ratio", 6.0), 1.0 + EPS)
+    excess_ratio = raw_pressure_ratio - 1.0
+    available_ratio = max_pressure_ratio - 1.0
+
+    return 1.0 + available_ratio * excess_ratio / (available_ratio + excess_ratio + EPS)
 
 
 def build_physics_inputs(state):
