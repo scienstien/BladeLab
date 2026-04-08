@@ -173,25 +173,22 @@ class OpenAIPolicy:
             # Log API error and return safe default action
             error_type = type(e).__name__
             if "auth" in str(e).lower():
-                print(f"[API_ERROR] Authentication failed: {e}")
+                pass
             elif "rate" in str(e).lower():
-                print(f"[API_ERROR] Rate limit exceeded: {e}")
+                pass
             elif "connection" in str(e).lower() or "timeout" in str(e).lower():
-                print(f"[API_ERROR] Connection/timeout error: {e}")
+                pass
             else:
-                print(f"[API_ERROR] {error_type}: {e}")
+                pass
             return safe_default_action()
 
         text = getattr(response, "output_text", "") or ""
         if not text:
-            print("[API_ERROR] Empty response from API")
             return safe_default_action()
 
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError as e:
-            print(f"[API_ERROR] Invalid JSON response: {e}")
-            print(f"[API_ERROR] Raw response (truncated): {text[:200]}")
             return safe_default_action()
 
         return validate_action(parsed)
