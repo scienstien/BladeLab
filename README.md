@@ -1,7 +1,7 @@
 ---
 title: turbodesigner2
 sdk: docker
-app_port: 8000
+app_port: 7860
 ---
 
 # TurboDesigner 2.0
@@ -115,6 +115,9 @@ Build and run with Docker:
 docker build -t turbodesigner2.0 .
 docker run -p 8000:8000 turbodesigner2.0
 ```
+
+The Docker image installs runtime dependencies from `requirements-server.txt`
+to keep validator builds fast and lightweight.
 
 To use the OpenAI-backed policy in Docker, pass env vars at runtime instead of
 baking secrets into the image:
