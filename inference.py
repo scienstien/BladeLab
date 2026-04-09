@@ -14,6 +14,11 @@ from env.models import Action, Observation, safe_default_action
 from env.tasks import get_task
 
 
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+
 STATE_KEYS = [
     "efficiency",
     "pressure_ratio",
@@ -268,12 +273,12 @@ def load_model(model_path=None, device=None, use_heuristic=False):
 
 
 def load_openai_policy(task_name, model_name):
-    api_key = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("HF_TOKEN or OPENAI_API_KEY is not set.")
+        raise RuntimeError("OPENAI_API_KEY is not set.")
 
-    base_url = os.getenv("API_BASE_URL") or os.getenv("OPENAI_BASE_URL")
-    model = model_name if model_name else os.getenv("MODEL_NAME", "gpt-4.1-mini")
+    base_url = API_BASE_URL
+    model = model_name if model_name else MODEL_NAME
 
     try:
         from openai import OpenAI

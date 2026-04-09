@@ -86,7 +86,7 @@ Heuristic policy flows and the current test suite do not require `OPENAI_API_KEY
 ### Run the OpenEnv Server
 
 ```bash
-python -m server.app --port 8000
+python -m server.app --port 7860
 ```
 
 ### Run the Flask API
@@ -113,7 +113,7 @@ Build and run with Docker:
 
 ```bash
 docker build -t turbodesigner2.0 .
-docker run -p 8000:8000 turbodesigner2.0
+docker run -p 7860:7860 turbodesigner2.0
 ```
 
 The Docker image installs runtime dependencies from `requirements-server.txt`
@@ -123,10 +123,10 @@ To use the OpenAI-backed policy in Docker, pass env vars at runtime instead of
 baking secrets into the image:
 
 ```bash
-docker run --env-file .env -p 8000:8000 turbodesigner2.0
+docker run --env-file .env -p 7860:7860 turbodesigner2.0
 ```
 
-For OpenEnv validation, the image should expose the FastAPI app on port `8000`.
+For OpenEnv validation, the image should expose the FastAPI app on port `7860`.
 
 ## Endpoints
 
