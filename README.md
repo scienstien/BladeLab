@@ -1,7 +1,11 @@
 ---
-title: turbodesigner2
+title: Bladelab
+emoji: 🦀
+colorFrom: pink
+colorTo: yellow
 sdk: docker
 app_port: 7860
+pinned: false
 ---
 
 # TurboDesigner 2.0
