@@ -15,6 +15,16 @@ app = create_app(
 )
 
 
+@app.get("/")
+def root():
+    return {
+        "status": "running",
+        "name": "TurboDesigner 2.0",
+        "docs": "/docs",
+        "schema": "/schema",
+    }
+
+
 def main(host: str = "0.0.0.0", port: int = 7860):
     import uvicorn
 
