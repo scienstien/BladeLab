@@ -35,10 +35,14 @@ class TurboDesignerEnvironment(Environment):
         self,
         observation,
         info: StepInfo | None,
+        reward: float | None = None,
+        done: bool = False,
     ) -> TurboDesignerObservation:
         payload = observation.model_dump()
         return TurboDesignerObservation(
             **payload,
+            reward=None if reward is None else float(reward),
+            done=bool(done),
             task_name=self._task_name,
             success=bool(info.success) if info is not None else False,
             metadata={
@@ -68,9 +72,8 @@ class TurboDesignerEnvironment(Environment):
         observation, reward, done, info = self._env.step(action.model_dump())
         self._state.step_count = self._env.step_count
         self._state.success = bool(info.success)
-        obs = self._build_observation(observation, info=info)
-        reward_obj = TurboDesignerReward(value=float(reward))
-        return obs, reward_obj, done, info
+        TurboDesignerReward(value=float(reward))
+        return self._build_observation(observation, info=info, reward=reward, done=done)
 
     @property
     def state(self) -> TurboDesignerState:
