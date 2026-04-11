@@ -2,7 +2,7 @@
 flask>=2.3.0
 fastapi>=0.110.0
 uvicorn>=0.30.0
-openenv-core[core]>=0.2.2
+openenv-core[core]>=0.2.3
 
 # ML dependencies
 torch>=2.0.0
