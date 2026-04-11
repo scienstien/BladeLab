@@ -3,6 +3,7 @@ import json
 import os
 import statistics
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -12,12 +13,6 @@ from env.core_env import BladeLabEnv
 from env.graders import grade_efficiency, grade_feasibility, grade_target_pr
 from env.models import Action, Observation, safe_default_action
 from env.tasks import get_task
-
-
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-HF_TOKEN = os.getenv("HF_TOKEN")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 
 STATE_KEYS = [
@@ -271,30 +266,36 @@ def load_model(model_path=None, device=None, use_heuristic=False):
 
 
 def load_openai_policy(task_name, model_name):
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set.")
-
-    base_url = API_BASE_URL
-    model = model_name if model_name else MODEL_NAME
+    api_key = os.environ["API_KEY"]
+    base_url = os.environ["API_BASE_URL"]
+    model = model_name if model_name else os.getenv("MODEL_NAME", "gpt-4.1-mini")
 
     try:
         from openai import OpenAI
     except ModuleNotFoundError as exc:
         raise RuntimeError("The openai package is not installed in this environment.") from exc
 
-    client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key, base_url=base_url)
     return OpenAIPolicy(client, model, task_name)
 
 
+def has_valid_proxy_env():
+    api_base_url = os.getenv("API_BASE_URL")
+    api_key = os.getenv("API_KEY")
+    if not api_base_url or not api_key:
+        return False
+
+    parsed = urlparse(api_base_url)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 def log_start(task, benchmark, model):
-    print(f"[START] task={task} env={benchmark} model={model}", flush=True)
+    print(f"[START] task={task} env={benchmark} model={model}")
 
 
 def log_end(success, steps, score, rewards):
-    success_str = str(bool(success)).lower()
-    rewards_str = ",".join(f"{float(reward):.2f}" for reward in rewards)
-    print(f"[END] success={success_str} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    rewards_str = json.dumps(rewards, separators=(",", ":"))
+    print(f"[END] success={success} steps={steps} score={score:.3f} rewards={rewards_str}")
 
 
 def log_step(trajectory, state, action, reward, next_state, info, step_num=None, done=False, error=None):
@@ -304,14 +305,16 @@ def log_step(trajectory, state, action, reward, next_state, info, step_num=None,
     action_dict = action.model_dump() if isinstance(action, Action) else dict(action)
     action_str = json.dumps(action_dict, separators=(",", ":"))
 
-    # Extract key metrics for trajectory capture
+    # Extract key metrics for logging
     next_state_dict = next_state.model_dump() if isinstance(next_state, Observation) else dict(next_state)
+    feasible = next_state_dict.get("feasible", "N/A")
+    pr = next_state_dict.get("pressure_ratio")
+    eff = next_state_dict.get("efficiency")
 
-    done_str = str(bool(done)).lower()
-    error_value = error if error else "null"
+    # Print [STEP] log to console
+    error_str = f" error={error}" if error else ""
     print(
-        f"[STEP] step={step_num} action={action_str} reward={reward:.2f} done={done_str} error={error_value}",
-        flush=True,
+        f"[STEP] step={step_num} action={action_str} reward={reward:.4f} done={done} feasible={feasible} PR={pr:.4f} eff={eff:.4f}{error_str}"
     )
 
     trajectory.append(
@@ -457,59 +460,57 @@ def parse_args():
 
 def main():
     args = parse_args()
-    if not args.openai and args.checkpoint is None:
-        args.heuristic = True
+    use_openai = False
 
-    model_label = args.model if args.openai else (args.checkpoint or "heuristic")
+    if args.heuristic:
+        model_label = "heuristic"
+    elif args.openai:
+        use_openai = True
+        model_label = args.model or os.getenv("MODEL_NAME", "gpt-4.1-mini")
+    elif args.checkpoint is not None:
+        model_label = args.checkpoint
+    elif has_valid_proxy_env():
+        use_openai = True
+        model_label = args.model or os.getenv("MODEL_NAME", "gpt-4.1-mini")
+    else:
+        args.heuristic = True
+        model_label = "heuristic"
+
     log_start(args.task, "turbodesigner2", model_label)
 
-    success = False
-    steps = 0
-    score = 0.0
-    rewards = []
+    if use_openai:
+        agent = Agent(load_openai_policy(args.task, args.model))
+    else:
+        agent = Agent(load_model(args.checkpoint, use_heuristic=args.heuristic))
 
-    try:
-        if args.openai:
-            agent = Agent(load_openai_policy(args.task, args.model))
-        else:
-            agent = Agent(load_model(args.checkpoint, use_heuristic=args.heuristic))
+    summary = evaluate_agent(
+        agent=agent,
+        task_name=args.task,
+        num_episodes=args.episodes,
+        max_steps=args.max_steps,
+    )
 
-        summary = evaluate_agent(
-            agent=agent,
-            task_name=args.task,
-            num_episodes=args.episodes,
-            max_steps=args.max_steps,
-        )
+    first_episode = summary["episodes"][0]
+    task = get_task(args.task)
+    successes = [
+        task.is_success(result["final_physics"], result["final_constraints"])
+        for result in summary["episodes"]
+    ]
+    if args.task == "target_pr":
+        score = statistics.mean(result["pr_score"] for result in summary["episodes"])
+    elif args.task == "target_pr_efficiency":
+        score = statistics.mean(result["efficiency_score"] for result in summary["episodes"])
+    else:
+        score = statistics.mean(result["feasible_score"] for result in summary["episodes"])
+    log_end(
+        success=all(successes),
+        steps=sum(len(result["trajectory"]) for result in summary["episodes"]),
+        score=score,
+        rewards=[result["total_reward"] for result in summary["episodes"]],
+    )
 
-        if not summary.get("episodes"):
-            return
-
-        first_episode = summary["episodes"][0]
-        task = get_task(args.task)
-        successes = [
-            task.is_success(result["final_physics"], result["final_constraints"])
-            for result in summary["episodes"]
-        ]
-
-        if args.task == "target_pr":
-            score = statistics.mean(result["pr_score"] for result in summary["episodes"])
-        elif args.task == "target_pr_efficiency":
-            score = statistics.mean(result["efficiency_score"] for result in summary["episodes"])
-        else:
-            score = statistics.mean(result["feasible_score"] for result in summary["episodes"])
-
-        success = all(successes)
-        steps = sum(len(result["trajectory"]) for result in summary["episodes"])
-        rewards = [
-            float(step["reward"])
-            for result in summary["episodes"]
-            for step in result["trajectory"]
-        ]
-
-        if args.plot:
-            plot_trajectory(first_episode["trajectory"], title=f"Rollout Trajectory - {args.task}")
-    finally:
-        log_end(success=success, steps=steps, score=score, rewards=rewards)
+    if args.plot:
+        plot_trajectory(first_episode["trajectory"], title=f"Rollout Trajectory - {args.task}")
 
 
 if __name__ == "__main__":
