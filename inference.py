@@ -65,7 +65,7 @@ class OpenAIPolicy:
                     },
                 ],
                 temperature=0,
-                max_tokens=120,
+                max_tokens=400,
             )
         except Exception as exc:
             raise RuntimeError("LLM call failed") from exc
@@ -73,10 +73,17 @@ class OpenAIPolicy:
         text = response.choices[0].message.content if response and response.choices else ""
         if not text:
             raise RuntimeError("LLM call failed")
+        text = text.strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1:
+            text = text[start:end+1]
 
         try:
             parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
+        except Exception as exc:
+            print("RAW MODEL OUTPUT:", text)
             raise RuntimeError("LLM call failed") from exc
 
         return validate_action(parsed)
@@ -96,7 +103,7 @@ def log_start(task, benchmark, model):
 
 
 def log_end(success, steps, score, rewards):
-    rewards_str = "[" + ",".join(f"{reward:.2f}" for reward in rewards) + "]" if rewards else "[]"
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}")
 
 
@@ -182,7 +189,7 @@ def evaluate_agent(agent, task_name, num_episodes=10, max_steps=None):
 
 def parse_args():
     parser = StrictArgumentParser(description="Deterministic OpenEnv-style inference rollout.")
-    parser.add_argument("--model", type=str, default="gpt-4.1-mini", help="OpenAI model for policy runs.")
+    parser.add_argument("--model", type=str, default=None, help="OpenAI model for policy runs.")
     parser.add_argument("--task", type=str, default="target_pr_efficiency", help="Environment task name.")
     parser.add_argument("--episodes", type=int, default=10, help="Number of evaluation episodes.")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per episode.")
@@ -202,7 +209,7 @@ def main():
     try:
         args = parse_args()
         task_name = args.task
-        model_label = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+        model_label = args.model if args.model else (os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct")
     except BaseException as exc:
         failure = exc
 
@@ -221,7 +228,7 @@ def main():
         API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
         API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
         MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
-        model = MODEL_NAME
+        model = args.model if args.model else MODEL_NAME
 
         client = OpenAI(
             base_url=API_BASE_URL,
