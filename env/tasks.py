@@ -1,6 +1,7 @@
 """Concrete optimization tasks for the environment."""
 
 from env.config import CHOKE_LIMIT, MAX_STEPS, PR_TARGET, SURGE_LIMIT
+from env.graders import grade_efficiency, grade_feasibility, grade_target_pr
 from env.reward import compute_score
 
 
@@ -29,9 +30,9 @@ class Task:
 
 
 class FeasibilityTask(Task):
+    grader = grade_feasibility
+
     def __init__(self, surge_limit=SURGE_LIMIT, choke_limit=CHOKE_LIMIT, max_steps=MAX_STEPS):
-        # Late import to avoid circular dependency with env.graders
-        from env.graders import grade_feasibility
         super().__init__(
             name="feasibility",
             description="Keep the design within surge and choke bounds.",
@@ -49,6 +50,8 @@ class FeasibilityTask(Task):
 
 
 class TargetPRTask(Task):
+    grader = grade_target_pr
+
     def __init__(
         self,
         target_pr=PR_TARGET,
@@ -57,8 +60,6 @@ class TargetPRTask(Task):
         choke_limit=CHOKE_LIMIT,
         max_steps=MAX_STEPS,
     ):
-        # Late import to avoid circular dependency with env.graders
-        from env.graders import grade_target_pr
         super().__init__(
             name="target_pr",
             description="Stay feasible while matching the target pressure ratio.",
@@ -78,6 +79,8 @@ class TargetPRTask(Task):
 
 
 class TargetPREfficiencyTask(TargetPRTask):
+    grader = grade_efficiency
+
     def __init__(
         self,
         target_pr=PR_TARGET,
@@ -87,8 +90,6 @@ class TargetPREfficiencyTask(TargetPRTask):
         choke_limit=CHOKE_LIMIT,
         max_steps=MAX_STEPS,
     ):
-        # Late import to avoid circular dependency with env.graders
-        from env.graders import grade_efficiency
         super().__init__(
             target_pr=target_pr,
             pr_tolerance=pr_tolerance,
@@ -131,6 +132,3 @@ def get_task(task_name):
         return TASKS[task_name]()
     except KeyError as exc:
         raise KeyError(f"Unknown task: {task_name}") from exc
-
-
-_TASK_INSTANCES = [cls() for cls in TASKS.values()]
