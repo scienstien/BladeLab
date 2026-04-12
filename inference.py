@@ -2,16 +2,12 @@ import argparse
 import json
 import os
 import statistics
+import sys
 from pathlib import Path
-from urllib.parse import urlparse
-
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from env.core_env import BladeLabEnv
 from env.graders import grade_efficiency, grade_feasibility, grade_target_pr
-from env.models import Action, Observation, safe_default_action
+from env.models import Action, Observation
 from env.tasks import get_task
 
 
@@ -120,7 +116,7 @@ class Agent:
     def act(self, observation, trajectory=None):
         if isinstance(self.policy, OpenAIPolicy):
             return validate_action(self.policy(observation, trajectory))
-        return validate_action(self.policy(observation))
+        raise RuntimeError("LLM call failed")
 
     def reset(self):
         pass
@@ -155,9 +151,9 @@ class OpenAIPolicy:
         }
 
         try:
-            response = self.client.responses.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
-                input=[
+                messages=[
                     {
                         "role": "system",
                         "content": "You are a deterministic compressor-control policy. Output strict JSON only.",
@@ -168,29 +164,19 @@ class OpenAIPolicy:
                     },
                 ],
                 temperature=0,
-                timeout=30,
+                max_tokens=120,
             )
-        except Exception as e:
-            # Log API error and return safe default action
-            error_type = type(e).__name__
-            if "auth" in str(e).lower():
-                pass
-            elif "rate" in str(e).lower():
-                pass
-            elif "connection" in str(e).lower() or "timeout" in str(e).lower():
-                pass
-            else:
-                pass
-            return safe_default_action()
+        except Exception as exc:
+            raise RuntimeError("LLM call failed") from exc
 
-        text = getattr(response, "output_text", "") or ""
+        text = response.choices[0].message.content if response and response.choices else ""
         if not text:
-            return safe_default_action()
+            raise RuntimeError("LLM call failed")
 
         try:
             parsed = json.loads(text)
-        except json.JSONDecodeError as e:
-            return safe_default_action()
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("LLM call failed") from exc
 
         return validate_action(parsed)
 
@@ -223,13 +209,13 @@ def validate_action(action_candidate):
         return action_candidate
     try:
         return Action(**action_candidate)
-    except Exception:
-        return safe_default_action()
+    except Exception as exc:
+        raise RuntimeError("LLM call failed") from exc
 
 
 def load_model(model_path=None, device=None, use_heuristic=False):
     if use_heuristic:
-        return HeuristicPolicy()
+        raise RuntimeError("LLM call failed")
 
     if torch is None:
         raise RuntimeError("PyTorch is not installed in this environment. Use --heuristic or install torch.")
@@ -266,27 +252,48 @@ def load_model(model_path=None, device=None, use_heuristic=False):
 
 
 def load_openai_policy(task_name, model_name):
-    api_key = os.environ["API_KEY"]
-    base_url = os.environ["API_BASE_URL"]
-    model = model_name if model_name else os.getenv("MODEL_NAME", "gpt-4.1-mini")
+    api_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+    if not api_key:
+        raise RuntimeError("Missing API credentials")
+    model = os.getenv("MODEL_NAME", model_name or "gpt-4.1-mini")
 
     try:
         from openai import OpenAI
     except ModuleNotFoundError as exc:
         raise RuntimeError("The openai package is not installed in this environment.") from exc
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
+api_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+if not api_key:
+    raise RuntimeError("Missing API credentials")
+
+client = OpenAI(
+        base_url=os.environ["API_BASE_URL"],
+        api_key=api_key
+    )
     return OpenAIPolicy(client, model, task_name)
 
 
-def has_valid_proxy_env():
-    api_base_url = os.getenv("API_BASE_URL")
-    api_key = os.getenv("API_KEY")
-    if not api_base_url or not api_key:
-        return False
+def ensure_llm_proxy_call(model_name):
+    api_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+    if not api_key:
+        raise RuntimeError("Missing API credentials")
+    try:
+        from openai import OpenAI
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("LLM call failed") from exc
 
-    parsed = urlparse(api_base_url)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    client = OpenAI(
+        base_url=os.environ["API_BASE_URL"],
+        api_key=api_key
+    )
+    try:
+        client.chat.completions.create(
+            model=os.getenv("MODEL_NAME", model_name or "gpt-4.1-mini"),
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+        )
+    except Exception as exc:
+        raise RuntimeError("LLM call failed") from exc
 
 
 def log_start(task, benchmark, model):
@@ -294,28 +301,19 @@ def log_start(task, benchmark, model):
 
 
 def log_end(success, steps, score, rewards):
-    rewards_str = json.dumps(rewards, separators=(",", ":"))
-    print(f"[END] success={success} steps={steps} score={score:.3f} rewards={rewards_str}")
+    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards) if rewards else "0.00"
+    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards) if rewards else "0.00"
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}")
 
 
 def log_step(trajectory, state, action, reward, next_state, info, step_num=None, done=False, error=None):
     step_num = len(trajectory) + 1 if step_num is None else step_num
 
-    # Serialize action as compact JSON
     action_dict = action.model_dump() if isinstance(action, Action) else dict(action)
     action_str = json.dumps(action_dict, separators=(",", ":"))
-
-    # Extract key metrics for logging
     next_state_dict = next_state.model_dump() if isinstance(next_state, Observation) else dict(next_state)
-    feasible = next_state_dict.get("feasible", "N/A")
-    pr = next_state_dict.get("pressure_ratio")
-    eff = next_state_dict.get("efficiency")
-
-    # Print [STEP] log to console
-    error_str = f" error={error}" if error else ""
-    print(
-        f"[STEP] step={step_num} action={action_str} reward={reward:.4f} done={done} feasible={feasible} PR={pr:.4f} eff={eff:.4f}{error_str}"
-    )
+    error_str = "null" if error is None else str(error)
+    print(f"[STEP] step={step_num} action={action_str} reward={reward:.2f} done={str(done).lower()} error={error_str}")
 
     trajectory.append(
         {
@@ -330,38 +328,45 @@ def log_step(trajectory, state, action, reward, next_state, info, step_num=None,
 
 
 def run_episode(env, agent, max_steps=None):
-    state = env.reset()
-    done = False
+    state = None
     total_reward = 0.0
     trajectory = []
     agent.reset()
     step_num = 0
 
-    while not done:
-        step_num += 1
-        action = agent.act(state, trajectory)
-        next_state, reward, done, info = env.step(action)
-        log_step(trajectory, state, action, reward, next_state, info, step_num=step_num, done=done)
+    try:
+        state = env.reset()
+        done = False
 
-        state = next_state
-        total_reward += reward
+        while not done:
+            step_num += 1
+            action = agent.act(state, trajectory)
+            next_state, reward, done, info = env.step(action)
+            log_step(trajectory, state, action, reward, next_state, info, step_num=step_num, done=done)
 
-        if max_steps is not None and env.step_count >= max_steps:
-            done = True
+            state = next_state
+            total_reward += reward
 
-    final_physics = env.physics
-    final_constraints = env.constraints
+            if max_steps is not None and env.step_count >= max_steps:
+                done = True
 
-    return {
-        "total_reward": total_reward,
-        "trajectory": trajectory,
-        "final_state": state.model_dump() if isinstance(state, Observation) else dict(state),
-        "final_physics": dict(final_physics),
-        "final_constraints": dict(final_constraints),
-        "feasible_score": grade_feasibility(final_physics, final_constraints),
-        "pr_score": grade_target_pr(final_physics, final_constraints),
-        "efficiency_score": grade_efficiency(final_physics, final_constraints),
-    }
+        final_physics = env.physics
+        final_constraints = env.constraints
+
+        return {
+            "total_reward": total_reward,
+            "trajectory": trajectory,
+            "final_state": state.model_dump() if isinstance(state, Observation) else dict(state),
+            "final_physics": dict(final_physics),
+            "final_constraints": dict(final_constraints),
+            "feasible_score": grade_feasibility(final_physics, final_constraints),
+            "pr_score": grade_target_pr(final_physics, final_constraints),
+            "efficiency_score": grade_efficiency(final_physics, final_constraints),
+        }
+    finally:
+        close_fn = getattr(env, "close", None)
+        if callable(close_fn):
+            close_fn()
 
 
 def evaluate_agent(agent, task_name, num_episodes=10, max_steps=None):
@@ -460,58 +465,57 @@ def parse_args():
 
 def main():
     args = parse_args()
-    use_openai = False
-
-    if args.heuristic:
-        model_label = "heuristic"
-    elif args.openai:
-        use_openai = True
-        model_label = args.model or os.getenv("MODEL_NAME", "gpt-4.1-mini")
-    elif args.checkpoint is not None:
-        model_label = args.checkpoint
-    elif has_valid_proxy_env():
-        use_openai = True
-        model_label = args.model or os.getenv("MODEL_NAME", "gpt-4.1-mini")
-    else:
-        args.heuristic = True
-        model_label = "heuristic"
+    model_label = os.getenv("MODEL_NAME", args.model or "gpt-4.1-mini")
+    summary = None
+    success = False
+    steps = 0
+    score = 0.0
+    rewards = []
+    exit_code = 0
 
     log_start(args.task, "turbodesigner2", model_label)
 
-    if use_openai:
+    try:
+        ensure_llm_proxy_call(args.model)
         agent = Agent(load_openai_policy(args.task, args.model))
-    else:
-        agent = Agent(load_model(args.checkpoint, use_heuristic=args.heuristic))
+        summary = evaluate_agent(
+            agent=agent,
+            task_name=args.task,
+            num_episodes=args.episodes,
+            max_steps=args.max_steps,
+        )
 
-    summary = evaluate_agent(
-        agent=agent,
-        task_name=args.task,
-        num_episodes=args.episodes,
-        max_steps=args.max_steps,
-    )
+        first_episode = summary["episodes"][0]
+        task = get_task(args.task)
+        successes = [
+            task.is_success(result["final_physics"], result["final_constraints"])
+            for result in summary["episodes"]
+        ]
+        if args.task == "target_pr":
+            score = statistics.mean(result["pr_score"] for result in summary["episodes"])
+        elif args.task == "target_pr_efficiency":
+            score = statistics.mean(result["efficiency_score"] for result in summary["episodes"])
+        else:
+            score = statistics.mean(result["feasible_score"] for result in summary["episodes"])
+        success = all(successes)
+        steps = sum(len(result["trajectory"]) for result in summary["episodes"])
+        rewards = [result["total_reward"] for result in summary["episodes"]]
 
-    first_episode = summary["episodes"][0]
-    task = get_task(args.task)
-    successes = [
-        task.is_success(result["final_physics"], result["final_constraints"])
-        for result in summary["episodes"]
-    ]
-    if args.task == "target_pr":
-        score = statistics.mean(result["pr_score"] for result in summary["episodes"])
-    elif args.task == "target_pr_efficiency":
-        score = statistics.mean(result["efficiency_score"] for result in summary["episodes"])
-    else:
-        score = statistics.mean(result["feasible_score"] for result in summary["episodes"])
-    log_end(
-        success=all(successes),
-        steps=sum(len(result["trajectory"]) for result in summary["episodes"]),
-        score=score,
-        rewards=[result["total_reward"] for result in summary["episodes"]],
-    )
+        if args.plot:
+            plot_trajectory(first_episode["trajectory"], title=f"Rollout Trajectory - {args.task}")
+    except Exception:
+        exit_code = 1
+    finally:
+        log_end(success=success, steps=steps, score=score, rewards=rewards)
 
-    if args.plot:
-        plot_trajectory(first_episode["trajectory"], title=f"Rollout Trajectory - {args.task}")
+    if exit_code:
+        raise SystemExit(exit_code)
 
+
+client = OpenAI(
+    base_url=os.environ["API_BASE_URL"],
+    api_key=api_key
+)
 
 if __name__ == "__main__":
     main()
