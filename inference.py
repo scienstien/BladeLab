@@ -262,15 +262,11 @@ def load_openai_policy(task_name, model_name):
     except ModuleNotFoundError as exc:
         raise RuntimeError("The openai package is not installed in this environment.") from exc
 
-api_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
-if not api_key:
-    raise RuntimeError("Missing API credentials")
-
-client = OpenAI(
+    client = OpenAI(
         base_url=os.environ["API_BASE_URL"],
         api_key=api_key
     )
-return OpenAIPolicy(client, model, task_name)
+    return OpenAIPolicy(client, model, task_name)
 
 
 def ensure_llm_proxy_call(model_name):
@@ -511,11 +507,6 @@ def main():
     if exit_code:
         raise SystemExit(exit_code)
 
-
-client = OpenAI(
-    base_url=os.environ["API_BASE_URL"],
-    api_key=api_key
-)
 
 if __name__ == "__main__":
     main()
