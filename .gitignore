@@ -36,3 +36,6 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+log.txt
+just_testing.py
+.claude/agents/code-commit-reviewer.md
