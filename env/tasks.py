@@ -112,10 +112,18 @@ class TargetPREfficiencyTask(TargetPRTask):
 
 
 TASKS = {
-    "feasibility": lambda: FeasibilityTask(),
-    "target_pr": lambda: TargetPRTask(),
-    "target_pr_efficiency": lambda: TargetPREfficiencyTask(),
+    "feasibility": FeasibilityTask,
+    "target_pr": TargetPRTask,
+    "target_pr_efficiency": TargetPREfficiencyTask,
 }
+
+
+def list_tasks():
+    return [
+        FeasibilityTask(),
+        TargetPRTask(),
+        TargetPREfficiencyTask(),
+    ]
 
 
 def get_task(task_name):
@@ -123,3 +131,6 @@ def get_task(task_name):
         return TASKS[task_name]()
     except KeyError as exc:
         raise KeyError(f"Unknown task: {task_name}") from exc
+
+
+_TASK_INSTANCES = [cls() for cls in TASKS.values()]

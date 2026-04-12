@@ -4,3 +4,7 @@ type: space
 runtime: fastapi
 app: server.app:app
 port: 7860
+tasks:
+  - feasibility
+  - target_pr
+  - target_pr_efficiency
