@@ -132,3 +132,6 @@ class BladeLabEnv:
 
     def get_trajectory(self):
         return self.history
+
+    def close(self):
+        return None

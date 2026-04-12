@@ -2,8 +2,6 @@ import argparse
 import json
 import os
 import statistics
-import sys
-from pathlib import Path
 
 from env.core_env import BladeLabEnv
 from env.graders import grade_efficiency, grade_feasibility, grade_target_pr
@@ -11,102 +9,9 @@ from env.models import Action, Observation
 from env.tasks import get_task
 
 
-STATE_KEYS = [
-    "efficiency",
-    "pressure_ratio",
-    "mass_flow",
-    "feasible",
-    "surge_margin",
-    "choke_margin",
-    "r2",
-    "blade_angle",
-    "b2",
-    "Z",
-]
-
-ACTION_KEYS = ["delta_r2", "delta_angle", "delta_b2", "delta_Z"]
-
-ACTION_SCALES = {
-    "delta_r2": 0.006,
-    "delta_angle": 4.0,
-    "delta_b2": 0.002,
-    "delta_Z": 1.0,
-}
-
-
-
-try:
-    import torch
-    import torch.nn as nn
-except ModuleNotFoundError:
-    torch = None
-    nn = None
-
-
-if nn is not None:
-    class DeterministicActor(nn.Module):
-        def __init__(self, input_dim, hidden_dims, output_dim):
-            super().__init__()
-            layers = []
-            prev_dim = input_dim
-            for hidden_dim in hidden_dims:
-                layers.append(nn.Linear(prev_dim, hidden_dim))
-                layers.append(nn.ReLU())
-                prev_dim = hidden_dim
-            layers.append(nn.Linear(prev_dim, output_dim))
-            layers.append(nn.Tanh())
-            self.network = nn.Sequential(*layers)
-
-        def forward(self, x):
-            return self.network(x)
-else:
-    class DeterministicActor:  # pragma: no cover - only used to raise a clear runtime error
-        def __init__(self, *args, **kwargs):
-            raise RuntimeError("PyTorch is required to load checkpoint-based policies.")
-
-
-class TorchPolicy:
-    def __init__(self, model, device):
-        self.model = model
-        self.device = device
-        self.model.eval()
-
-    def __call__(self, state):
-        state_tensor = torch.tensor(encode_state(state), dtype=torch.float32, device=self.device).unsqueeze(0)
-        with torch.no_grad():
-            action_tensor = self.model(state_tensor).squeeze(0).cpu().tolist()
-        return validate_action(decode_action(action_tensor))
-
-
-class HeuristicPolicy:
-    """Deterministic fallback policy for debugging when no checkpoint is available."""
-
-    def __call__(self, state):
-        state = state.model_dump() if isinstance(state, Observation) else state
-        action = {
-            "delta_r2": 0.0,
-            "delta_angle": 0.0,
-            "delta_b2": 0.0,
-            "delta_Z": 0,
-        }
-
-        if not state["feasible"]:
-            if state["choke_margin"] < 0:
-                action["delta_r2"] = -0.004
-                action["delta_b2"] = -0.001
-            elif state["surge_margin"] < 0:
-                action["delta_r2"] = 0.004
-                action["delta_b2"] = 0.001
-            return action
-
-        if state["pressure_ratio"] < 1.2:
-            action["delta_angle"] = 2.0
-            action["delta_Z"] = 1
-        elif state["efficiency"] < 0.7:
-            action["delta_r2"] = -0.001
-            action["delta_b2"] = -0.0005
-
-        return action
+class StrictArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
 
 
 class Agent:
@@ -114,9 +19,7 @@ class Agent:
         self.policy = policy
 
     def act(self, observation, trajectory=None):
-        if isinstance(self.policy, OpenAIPolicy):
-            return validate_action(self.policy(observation, trajectory))
-        raise RuntimeError("LLM call failed")
+        return validate_action(self.policy(observation, trajectory))
 
     def reset(self):
         pass
@@ -138,7 +41,6 @@ class OpenAIPolicy:
             }
             for step in (trajectory or [])[-5:]
         ]
-
         prompt = {
             "task": self.task_name,
             "instruction": (
@@ -149,7 +51,6 @@ class OpenAIPolicy:
             "recent_trajectory": compact_trajectory,
             "action_bounds": Action.model_json_schema(),
         }
-
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -181,29 +82,6 @@ class OpenAIPolicy:
         return validate_action(parsed)
 
 
-def encode_state(state):
-    state = state.model_dump() if isinstance(state, Observation) else state
-    encoded = []
-    for key in STATE_KEYS:
-        value = state[key]
-        if key == "feasible":
-            encoded.append(1.0 if value else 0.0)
-        else:
-            encoded.append(float(value))
-    return encoded
-
-
-def decode_action(action_values):
-    action = {}
-    for index, key in enumerate(ACTION_KEYS):
-        scaled_value = float(action_values[index]) * ACTION_SCALES[key]
-        if key == "delta_Z":
-            action[key] = int(round(scaled_value))
-        else:
-            action[key] = scaled_value
-    return action
-
-
 def validate_action(action_candidate):
     if isinstance(action_candidate, Action):
         return action_candidate
@@ -213,110 +91,27 @@ def validate_action(action_candidate):
         raise RuntimeError("LLM call failed") from exc
 
 
-def load_model(model_path=None, device=None, use_heuristic=False):
-    if use_heuristic:
-        raise RuntimeError("LLM call failed")
-
-    if torch is None:
-        raise RuntimeError("PyTorch is not installed in this environment. Use --heuristic or install torch.")
-
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-    if model_path is None:
-        raise ValueError("A checkpoint path is required unless --heuristic is used.")
-
-    checkpoint_path = Path(model_path)
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-
-    if isinstance(checkpoint, nn.Module):
-        model = checkpoint.to(device)
-        return TorchPolicy(model, device)
-
-    if not isinstance(checkpoint, dict):
-        raise TypeError("Unsupported checkpoint format. Expected nn.Module or checkpoint dict.")
-
-    state_dim = checkpoint.get("state_dim", len(STATE_KEYS))
-    action_dim = checkpoint.get("action_dim", len(ACTION_KEYS))
-    hidden_dims = checkpoint.get("hidden_dims", [128, 128])
-    state_dict = checkpoint.get("model_state_dict") or checkpoint.get("state_dict")
-
-    if state_dict is None:
-        raise KeyError("Checkpoint dict must contain model_state_dict or state_dict.")
-
-    model = DeterministicActor(state_dim, hidden_dims, action_dim).to(device)
-    model.load_state_dict(state_dict)
-    return TorchPolicy(model, device)
-
-
-def load_openai_policy(task_name, model_name):
-    api_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
-    if not api_key:
-        raise RuntimeError("Missing API credentials")
-    model = os.getenv("MODEL_NAME", model_name or "gpt-4.1-mini")
-
-    try:
-        from openai import OpenAI
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("The openai package is not installed in this environment.") from exc
-
-    client = OpenAI(
-        base_url=os.environ["API_BASE_URL"],
-        api_key=api_key
-    )
-    return OpenAIPolicy(client, model, task_name)
-
-
-def ensure_llm_proxy_call(model_name):
-    api_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
-    if not api_key:
-        raise RuntimeError("Missing API credentials")
-    try:
-        from openai import OpenAI
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("LLM call failed") from exc
-
-    client = OpenAI(
-        base_url=os.environ["API_BASE_URL"],
-        api_key=api_key
-    )
-    try:
-        client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", model_name or "gpt-4.1-mini"),
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
-        )
-    except Exception as exc:
-        raise RuntimeError("LLM call failed") from exc
-
-
 def log_start(task, benchmark, model):
     print(f"[START] task={task} env={benchmark} model={model}")
 
 
 def log_end(success, steps, score, rewards):
-    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards) if rewards else "0.00"
-    rewards_str = ",".join(f"{reward:.2f}" for reward in rewards) if rewards else "0.00"
+    rewards_str = "[" + ",".join(f"{reward:.2f}" for reward in rewards) + "]" if rewards else "[]"
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}")
 
 
 def log_step(trajectory, state, action, reward, next_state, info, step_num=None, done=False, error=None):
     step_num = len(trajectory) + 1 if step_num is None else step_num
-
     action_dict = action.model_dump() if isinstance(action, Action) else dict(action)
     action_str = json.dumps(action_dict, separators=(",", ":"))
-    next_state_dict = next_state.model_dump() if isinstance(next_state, Observation) else dict(next_state)
-    error_str = "null" if error is None else str(error)
+    error_str = "null" if error is None else json.dumps(str(error), separators=(",", ":"))
     print(f"[STEP] step={step_num} action={action_str} reward={reward:.2f} done={str(done).lower()} error={error_str}")
-
     trajectory.append(
         {
             "state": state.model_dump() if isinstance(state, Observation) else dict(state),
             "action": action_dict,
             "reward": float(reward),
-            "next_state": next_state_dict,
+            "next_state": next_state.model_dump() if isinstance(next_state, Observation) else dict(next_state),
             "info": info.model_dump() if hasattr(info, "model_dump") else info,
             "error": error,
         }
@@ -329,26 +124,21 @@ def run_episode(env, agent, max_steps=None):
     trajectory = []
     agent.reset()
     step_num = 0
-
     try:
         state = env.reset()
         done = False
-
         while not done:
             step_num += 1
             action = agent.act(state, trajectory)
             next_state, reward, done, info = env.step(action)
             log_step(trajectory, state, action, reward, next_state, info, step_num=step_num, done=done)
-
             state = next_state
             total_reward += reward
-
             if max_steps is not None and env.step_count >= max_steps:
                 done = True
 
         final_physics = env.physics
         final_constraints = env.constraints
-
         return {
             "total_reward": total_reward,
             "trajectory": trajectory,
@@ -360,18 +150,14 @@ def run_episode(env, agent, max_steps=None):
             "efficiency_score": grade_efficiency(final_physics, final_constraints),
         }
     finally:
-        close_fn = getattr(env, "close", None)
-        if callable(close_fn):
-            close_fn()
+        env.close()
 
 
 def evaluate_agent(agent, task_name, num_episodes=10, max_steps=None):
     episode_results = []
-
     for _ in range(num_episodes):
         env = BladeLabEnv(task_name=task_name)
-        result = run_episode(env, agent, max_steps=max_steps)
-        episode_results.append(result)
+        episode_results.append(run_episode(env, agent, max_steps=max_steps))
 
     rewards = [result["total_reward"] for result in episode_results]
     prs = [result["final_physics"]["pressure_ratio"] for result in episode_results]
@@ -381,7 +167,7 @@ def evaluate_agent(agent, task_name, num_episodes=10, max_steps=None):
     def variance(values):
         return statistics.pvariance(values) if len(values) > 1 else 0.0
 
-    summary = {
+    return {
         "reward_mean": statistics.mean(rewards),
         "reward_variance": variance(rewards),
         "pr_mean": statistics.mean(prs),
@@ -392,96 +178,72 @@ def evaluate_agent(agent, task_name, num_episodes=10, max_steps=None):
         "mass_flow_variance": variance(mass_flows),
         "episodes": episode_results,
     }
-    return summary
-
-
-def plot_trajectory(trajectory, title="Rollout Trajectory"):
-    import matplotlib.pyplot as plt
-
-    steps = list(range(len(trajectory)))
-    prs = [step["next_state"]["pressure_ratio"] for step in trajectory]
-    efficiencies = [step["next_state"]["efficiency"] for step in trajectory]
-    mass_flows = [step["next_state"]["mass_flow"] for step in trajectory]
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(steps, prs, label="Pressure Ratio")
-    plt.plot(steps, efficiencies, label="Efficiency")
-    plt.plot(steps, mass_flows, label="Mass Flow")
-    plt.xlabel("Step")
-    plt.ylabel("Value")
-    plt.title(title)
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-
-def print_episode_result(result):
-    physics = result["final_physics"]
-    constraints = result["final_constraints"]
-
-    print("--- FINAL RESULTS ---")
-    print(f"Total Reward: {result['total_reward']:.4f}")
-    print(f"Pressure Ratio: {physics['pressure_ratio']:.6f}")
-    print(f"Efficiency: {physics['efficiency']:.6f}")
-    print(f"Mass Flow: {physics['mass_flow']:.6f}")
-    print(f"Feasible: {constraints['feasible']}")
-    print(f"Choke Margin: {constraints['choke_margin']:.6f}")
-    print(f"Surge Margin: {constraints['surge_margin']:.6f}")
-    print(f"Feasibility Score: {result['feasible_score']:.3f}")
-    print(f"PR Score: {result['pr_score']:.3f}")
-    print(f"Efficiency Score: {result['efficiency_score']:.3f}")
-    print(f"Trajectory Length: {len(result['trajectory'])}")
-
-
-def print_evaluation_summary(summary):
-    print("--- EVALUATION SUMMARY ---")
-    print(f"Reward Mean: {summary['reward_mean']:.4f}")
-    print(f"Reward Variance: {summary['reward_variance']:.4f}")
-    print(f"PR Mean: {summary['pr_mean']:.6f}")
-    print(f"PR Variance: {summary['pr_variance']:.6f}")
-    print(f"Efficiency Mean: {summary['efficiency_mean']:.6f}")
-    print(f"Efficiency Variance: {summary['efficiency_variance']:.6f}")
-    print(f"Mass Flow Mean: {summary['mass_flow_mean']:.6f}")
-    print(f"Mass Flow Variance: {summary['mass_flow_variance']:.6f}")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Deterministic OpenEnv-style inference rollout.")
-    parser.add_argument("--checkpoint", type=str, default=None, help="Path to the trained policy checkpoint.")
-    parser.add_argument("--model", type=str, default="gpt-4.1-mini", help="OpenAI model for API baseline runs.")
+    parser = StrictArgumentParser(description="Deterministic OpenEnv-style inference rollout.")
+    parser.add_argument("--model", type=str, default="gpt-4.1-mini", help="OpenAI model for policy runs.")
     parser.add_argument("--task", type=str, default="target_pr_efficiency", help="Environment task name.")
     parser.add_argument("--episodes", type=int, default=10, help="Number of evaluation episodes.")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per episode.")
-    parser.add_argument("--plot", action="store_true", help="Plot the first episode trajectory.")
-    parser.add_argument("--heuristic", action="store_true", help="Use deterministic heuristic fallback instead of a checkpoint.")
-    parser.add_argument("--openai", action="store_true", help="Use the OpenAI API policy baseline.")
     return parser.parse_args()
 
 
 def main():
-    args = parse_args()
-    model_label = os.getenv("MODEL_NAME", args.model or "gpt-4.1-mini")
-    summary = None
+    args = None
+    failure = None
     success = False
     steps = 0
     score = 0.0
     rewards = []
-    exit_code = 0
-
-    log_start(args.task, "turbodesigner2", model_label)
+    task_name = "target_pr_efficiency"
+    model_label = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 
     try:
-        ensure_llm_proxy_call(args.model)
-        agent = Agent(load_openai_policy(args.task, args.model))
+        args = parse_args()
+        task_name = args.task
+        model_label = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+    except BaseException as exc:
+        failure = exc
+
+    log_start(task_name, "turbodesigner2", model_label)
+
+    try:
+        if failure is not None:
+            raise failure
+        if args.episodes < 1:
+            raise ValueError("episodes must be >= 1")
+        if args.max_steps is not None and args.max_steps < 1:
+            raise ValueError("max_steps must be >= 1")
+
+        from openai import OpenAI
+
+        API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+        API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+        MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+        model = MODEL_NAME
+
+        client = OpenAI(
+            base_url=API_BASE_URL,
+            api_key=API_KEY
+        )
+
+        try:
+            client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+            )
+        except Exception as exc:
+            raise RuntimeError("LLM call failed") from exc
+
+        agent = Agent(OpenAIPolicy(client, model, args.task))
         summary = evaluate_agent(
             agent=agent,
             task_name=args.task,
             num_episodes=args.episodes,
             max_steps=args.max_steps,
         )
-
-        first_episode = summary["episodes"][0]
         task = get_task(args.task)
         successes = [
             task.is_success(result["final_physics"], result["final_constraints"])
@@ -496,16 +258,13 @@ def main():
         success = all(successes)
         steps = sum(len(result["trajectory"]) for result in summary["episodes"])
         rewards = [result["total_reward"] for result in summary["episodes"]]
-
-        if args.plot:
-            plot_trajectory(first_episode["trajectory"], title=f"Rollout Trajectory - {args.task}")
-    except Exception:
-        exit_code = 1
+    except BaseException as exc:
+        failure = exc
     finally:
         log_end(success=success, steps=steps, score=score, rewards=rewards)
 
-    if exit_code:
-        raise SystemExit(exit_code)
+    if failure is not None:
+        raise failure
 
 
 if __name__ == "__main__":
