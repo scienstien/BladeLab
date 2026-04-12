@@ -93,6 +93,12 @@ def validate_action(action_candidate):
     if isinstance(action_candidate, Action):
         return action_candidate
     try:
+        # sanitize delta_Z to integer if present
+        if isinstance(action_candidate, dict) and "delta_Z" in action_candidate:
+            try:
+                action_candidate["delta_Z"] = int(round(float(action_candidate["delta_Z"])))
+            except Exception:
+                raise RuntimeError("LLM call failed")
         return Action(**action_candidate)
     except Exception as exc:
         raise RuntimeError("LLM call failed") from exc
