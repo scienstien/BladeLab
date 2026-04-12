@@ -270,7 +270,7 @@ client = OpenAI(
         base_url=os.environ["API_BASE_URL"],
         api_key=api_key
     )
-    return OpenAIPolicy(client, model, task_name)
+return OpenAIPolicy(client, model, task_name)
 
 
 def ensure_llm_proxy_call(model_name):
