@@ -5,11 +5,12 @@ from env.reward import compute_score
 
 
 class Task:
-    def __init__(self, name, description="", max_steps=MAX_STEPS, reward_scale=10.0):
+    def __init__(self, name, description="", max_steps=MAX_STEPS, reward_scale=10.0, grader=None):
         self.name = name
         self.description = description
         self.max_steps = max_steps
         self.reward_scale = reward_scale
+        self.grader = grader
 
     def reset(self):
         return None
@@ -33,6 +34,7 @@ class FeasibilityTask(Task):
             name="feasibility",
             description="Keep the design within surge and choke bounds.",
             max_steps=max_steps,
+            grader=grade_feasibility,
         )
         self.surge_limit = surge_limit
         self.choke_limit = choke_limit
@@ -57,6 +59,7 @@ class TargetPRTask(Task):
             name="target_pr",
             description="Stay feasible while matching the target pressure ratio.",
             max_steps=max_steps,
+            grader=grade_target_pr,
         )
         self.target_pr = target_pr
         self.pr_tolerance = pr_tolerance
@@ -90,6 +93,7 @@ class TargetPREfficiencyTask(TargetPRTask):
         self.name = "target_pr_efficiency"
         self.description = "Stay feasible, match target pressure ratio, and maximize efficiency."
         self.min_efficiency = min_efficiency
+        self.grader = grade_efficiency
 
     def compute_reward(self, physics, constraints, prev_physics=None):
         return self.reward_scale * self.score(physics, constraints)
@@ -99,6 +103,9 @@ class TargetPREfficiencyTask(TargetPRTask):
             super().is_success(physics, constraints)
             and physics["efficiency"] >= self.min_efficiency
         )
+
+
+from env.graders import grade_efficiency, grade_feasibility, grade_target_pr
 
 
 TASKS = {
