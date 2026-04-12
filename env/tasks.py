@@ -30,6 +30,8 @@ class Task:
 
 class FeasibilityTask(Task):
     def __init__(self, surge_limit=SURGE_LIMIT, choke_limit=CHOKE_LIMIT, max_steps=MAX_STEPS):
+        # Late import to avoid circular dependency with env.graders
+        from env.graders import grade_feasibility
         super().__init__(
             name="feasibility",
             description="Keep the design within surge and choke bounds.",
@@ -55,6 +57,8 @@ class TargetPRTask(Task):
         choke_limit=CHOKE_LIMIT,
         max_steps=MAX_STEPS,
     ):
+        # Late import to avoid circular dependency with env.graders
+        from env.graders import grade_target_pr
         super().__init__(
             name="target_pr",
             description="Stay feasible while matching the target pressure ratio.",
@@ -83,6 +87,8 @@ class TargetPREfficiencyTask(TargetPRTask):
         choke_limit=CHOKE_LIMIT,
         max_steps=MAX_STEPS,
     ):
+        # Late import to avoid circular dependency with env.graders
+        from env.graders import grade_efficiency
         super().__init__(
             target_pr=target_pr,
             pr_tolerance=pr_tolerance,
@@ -103,9 +109,6 @@ class TargetPREfficiencyTask(TargetPRTask):
             super().is_success(physics, constraints)
             and physics["efficiency"] >= self.min_efficiency
         )
-
-
-from env.graders import grade_efficiency, grade_feasibility, grade_target_pr
 
 
 TASKS = {
