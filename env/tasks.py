@@ -117,16 +117,6 @@ TASKS = {
     "target_pr": TargetPRTask,
     "target_pr_efficiency": TargetPREfficiencyTask,
 }
-
-
-def list_tasks():
-    return [
-        FeasibilityTask(),
-        TargetPRTask(),
-        TargetPREfficiencyTask(),
-    ]
-
-
 def get_task(task_name):
     try:
         return TASKS[task_name]()

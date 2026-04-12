@@ -3,10 +3,11 @@
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
+from openenv.core.env_server.types import EnvironmentMetadata
 
 from env.core_env import BladeLabEnv
 from env.models import StepInfo
-from env.tasks import TASKS
+from env.tasks import FeasibilityTask, TargetPREfficiencyTask, TargetPRTask
 from models import TurboDesignerAction, TurboDesignerObservation, TurboDesignerReward, TurboDesignerState
 
 
@@ -17,8 +18,13 @@ class TurboDesignerEnvironment(Environment):
 
     def __init__(self):
         super().__init__()
+        self.tasks = {
+            "feasibility": FeasibilityTask(),
+            "target_pr": TargetPRTask(),
+            "target_pr_efficiency": TargetPREfficiencyTask(),
+        }
         self._task_name = "feasibility"
-        self._env = BladeLabEnv(task_name=self._task_name)
+        self._env = BladeLabEnv(task=self.tasks[self._task_name])
         self._state = TurboDesignerState(
             episode_id=str(uuid4()),
             step_count=0,
@@ -27,7 +33,7 @@ class TurboDesignerEnvironment(Environment):
         )
 
     def _ensure_task(self, task_name: str) -> str:
-        if task_name not in TASKS:
+        if task_name not in self.tasks:
             raise ValueError(f"Unknown task_name: {task_name}")
         return task_name
 
@@ -55,7 +61,7 @@ class TurboDesignerEnvironment(Environment):
     def reset(self, seed=None, episode_id=None, task_name="feasibility", **kwargs) -> TurboDesignerObservation:
         del seed, kwargs
         self._task_name = self._ensure_task(task_name)
-        self._env = BladeLabEnv(task_name=self._task_name)
+        self._env = BladeLabEnv(task=self.tasks[self._task_name])
         observation = self._env.reset()
         self._state = TurboDesignerState(
             episode_id=episode_id or str(uuid4()),
@@ -78,3 +84,11 @@ class TurboDesignerEnvironment(Environment):
     @property
     def state(self) -> TurboDesignerState:
         return self._state
+
+    def get_metadata(self) -> EnvironmentMetadata:
+        task_names = ", ".join(self.tasks.keys())
+        return EnvironmentMetadata(
+            name="TurboDesigner 2.0",
+            description=f"OpenEnv turbomachinery design environment with tasks: {task_names}",
+            version="1.0.0",
+        )
